@@ -501,10 +501,12 @@ const COLUMNS = [
     id: 'cumPnl', accessorKey: 'cumPnl', header: 'Cum PnL (L)', isPaired: false, size: 100,
     cell: ({ getValue }) => { const v = getValue(); return <NumCell display={v.display} styleKey={v.styleKey} />; }
   },
-  {
-    id: 'mtm', accessorKey: 'mtm', header: 'MTM (L)', isPaired: false, size: 90,
-    cell: ({ getValue }) => { const v = getValue(); return <NumCell display={v.display} styleKey={v.styleKey} />; }
-  },
+  { id: 'mtm', accessorKey: 'mtm', header: 'MTM (L)', isPaired: false, size: 80,
+    cell: ({ getValue }) => { const v = getValue(); return <NumCell display={v.display} styleKey={v.styleKey} />; } },
+  { id: 'nseMtm', accessorKey: 'nseMtm', header: 'NSE MTM (L)', isPaired: false, size: 90,
+    cell: ({ getValue }) => { const v = getValue(); return <NumCell display={v.display} styleKey={v.styleKey} />; } },
+  { id: 'othersMtm', accessorKey: 'othersMtm', header: 'Others MTM (L)', isPaired: false, size: 100,
+    cell: ({ getValue }) => { const v = getValue(); return <NumCell display={v.display} styleKey={v.styleKey} />; } },
   // ── Margin columns ─────────────────────────────────────────────────────────
   {
     id: 'nseMargin', accessorKey: 'nseMargin', header: 'NSE Margin', isPaired: false, size: 100,
@@ -536,7 +538,7 @@ const aggregateBuckets = (posList) => {
     niftyFut: 0, bnfFut: 0, totalC: 0, totalP: 0,
     cw: 0, cw1: 0, cw2: 0, cw3: 0, cw4: 0, cw5: 0,
     pw: 0, pw1: 0, pw2: 0, pw3: 0, pw4: 0, pw5: 0,
-    stocks: 0, pnl: 0, cumPnl: 0, mtm: 0,
+    stocks: 0, pnl: 0, cumPnl: 0, mtm: 0, nseMtm: 0, othersMtm: 0,
     nseMargin: 0, totalMargin: 0, bseMargin: 0, ifscMargin: 0, nseMaxMargin: 0,
   };
   for (const pos of posList) {
@@ -559,9 +561,14 @@ const aggregateBuckets = (posList) => {
     sum.stocks += pos.stocks || 0;
     // PnL/MTM — sum from tradesMap
     for (const trade of Object.values(pos.tradesMap || {})) {
-      sum.pnl += trade.Pnl || 0;
+      sum.pnl    += trade.Pnl    || 0;
       sum.cumPnl += trade.cumPnl || 0;
-      sum.mtm += trade.MTM || 0;
+      sum.mtm    += trade.MTM    || 0;
+      if (trade.SecurityExchange === 'NSEFO') {
+        sum.nseMtm += trade.MTM || 0;
+      } else {
+        sum.othersMtm += trade.MTM || 0;
+      }
     }
     // Margin — sum directly from position-level fields set by updateSpanMargin
     sum.nseMargin    += pos.nseMarginAbs  || 0;
@@ -595,7 +602,9 @@ const aggToRow = (agg) => ({
   stocks: aggNumVal(agg.stocks),
   pnl: decimalVal(agg.pnl),
   cumPnl: decimalVal(agg.cumPnl),
-  mtm: decimalVal(agg.mtm),
+  mtm:       decimalVal(agg.mtm),
+  nseMtm:    decimalVal(agg.nseMtm),
+  othersMtm: decimalVal(agg.othersMtm),
   nseMargin:    marginVal(agg.nseMargin),
   totalMargin:  marginVal(agg.totalMargin),
   bseMargin:    marginVal(agg.bseMargin),
@@ -940,10 +949,16 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       pStyleKey: p === 0 ? 'zero' : 'put',
     });
 
+    let totalNseMtm = 0, totalOthersMtm = 0;
     for (const trade of Object.values(pos.tradesMap)) {
-      totalPnl += trade.Pnl || 0;
+      totalPnl    += trade.Pnl    || 0;
       totalCumPnl += trade.cumPnl || 0;
-      totalMtm += trade.MTM || 0;
+      totalMtm    += trade.MTM    || 0;
+      if (trade.SecurityExchange === 'NSEFO') {
+        totalNseMtm += trade.MTM || 0;
+      } else {
+        totalOthersMtm += trade.MTM || 0;
+      }
     }
     return {
       niftyFut: bucketVal(pos.niftyFut, 'niftyFut'),
@@ -958,7 +973,9 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       stocks: bucketVal(pos.stocks, 'stocks'),
       pnl: decimalVal(totalPnl),
       cumPnl: decimalVal(totalCumPnl),
-      mtm: decimalVal(totalMtm),
+      mtm:       decimalVal(totalMtm),
+      nseMtm:    decimalVal(totalNseMtm),
+      othersMtm: decimalVal(totalOthersMtm),
       nseMargin:    marginVal(pos.nseMarginAbs  || 0),
       totalMargin:  marginVal(pos.totalMargin   || 0),
       bseMargin:    marginVal(pos.bseMarginAbs  || 0),

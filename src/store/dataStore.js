@@ -295,7 +295,7 @@ export const useDataStore = create(devtools((set, get) => ({
   fetchCommonSubscription: async () => {
     try {
       const data = await getCommonSubscription();
-      console.log("Fetched common subscriptions:", data);
+      // console.log("Fetched common subscriptions:", data);
       set({ subscriptions: data });
     } catch (err) {
       console.error('Failed to fetch subscriptions:', err);
@@ -899,24 +899,24 @@ export const useDataStore = create(devtools((set, get) => ({
       const newTrades = Object.values(updatedPositions[user].tradesMap)
         .filter(t => t.NetPos !== 0)
         .slice(0, 2);
-      console.group(`[DIAG] After LTP socket update — user: ${user}`);
+      // console.group(`[DIAG] After LTP socket update — user: ${user}`);
       newTrades.forEach(t => {
         const oldTrade = positions[user]?.tradesMap[
           Object.keys(positions[user].tradesMap).find(k =>
             positions[user].tradesMap[k].Symbol === t.Symbol
           )
         ];
-        console.log(`  Symbol:      ${t.Symbol}`);
-        console.log(`  LTP:         ${oldTrade?.Ltp} → ${t.Ltp}`);
-        console.log(`  Open_price:  ${t.Open_price}`);
-        console.log(`  SOD_BuyQty:  ${t.SOD_BuyQty}`);
-        console.log(`  SOD_SellQty: ${t.SOD_SellQty}`);
-        console.log(`  BuyQty:      ${t.BuyQty}`);
-        console.log(`  SellQty:     ${t.SellQty}`);
-        console.log(`  NetPos:      ${t.NetPos}`);
-        console.log(`  Pnl:         ${oldTrade?.Pnl} → ${t.Pnl}`);
-        console.log(`  cumPnl:      ${oldTrade?.cumPnl} → ${t.cumPnl}`);
-        console.log(`  MTM:         ${oldTrade?.MTM} → ${t.MTM}`);
+        // console.log(`  Symbol:      ${t.Symbol}`);
+        // console.log(`  LTP:         ${oldTrade?.Ltp} → ${t.Ltp}`);
+        // console.log(`  Open_price:  ${t.Open_price}`);
+        // console.log(`  SOD_BuyQty:  ${t.SOD_BuyQty}`);
+        // console.log(`  SOD_SellQty: ${t.SOD_SellQty}`);
+        // console.log(`  BuyQty:      ${t.BuyQty}`);
+        // console.log(`  SellQty:     ${t.SellQty}`);
+        // console.log(`  NetPos:      ${t.NetPos}`);
+        // console.log(`  Pnl:         ${oldTrade?.Pnl} → ${t.Pnl}`);
+        // console.log(`  cumPnl:      ${oldTrade?.cumPnl} → ${t.cumPnl}`);
+        // console.log(`  MTM:         ${oldTrade?.MTM} → ${t.MTM}`);
       });
       console.groupEnd();
     });
@@ -1047,12 +1047,7 @@ export const useDataStore = create(devtools((set, get) => ({
     }
 
     const ltpMap = {};
-    LTP_Data.forEach((item) => {
-      // Key by both SecurityId and Exchange to avoid collisions
-      ltpMap[`${item.SecurityId}_${item.Exchange}`] = item.LTP;
-      // Also keep SecurityId-only as fallback
-      if (!ltpMap[item.SecurityId]) ltpMap[item.SecurityId] = item.LTP;
-    });
+    LTP_Data.forEach((item) => { ltpMap[item.SecurityId] = item.LTP ?? 0; });
 
     const today = new Date();
     const todayNum =
@@ -1098,15 +1093,13 @@ export const useDataStore = create(devtools((set, get) => ({
         }
       }
 
-      const ltp = ltpMap[`${trade.SecurityId}_${trade.SecurityExchange}`]
-        ?? ltpMap[trade.SecurityId]
-        ?? 0;
+      const ltp = ltpMap[trade.SecurityId] ?? 0;
       const tradeKey = `${trade.Account}_${trade.SecurityExchange}_${trade.SecurityId}`;
       // TEMP DIAG
       if (trade.SecurityExchange === 'IFSC' && trade.Symbol === 'NIFTY') {
-        console.log('[IFSC DIAG] raw trade.SecurityId:', trade.SecurityId, 'type:', typeof trade.SecurityId, 'ltp from ltpMap:', ltp);
-        console.log('[IFSC DIAG] ltpMap keys sample:', Object.keys(ltpMap).slice(0, 5));
-        console.log('[IFSC DIAG] ltpMap["1102"]:', ltpMap['1102'], 'ltpMap[1102]:', ltpMap[1102]);
+        // console.log('[IFSC DIAG] raw trade.SecurityId:', trade.SecurityId, 'type:', typeof trade.SecurityId, 'ltp from ltpMap:', ltp);
+        // console.log('[IFSC DIAG] ltpMap keys sample:', Object.keys(ltpMap).slice(0, 5));
+        // console.log('[IFSC DIAG] ltpMap["1102"]:', ltpMap['1102'], 'ltpMap[1102]:', ltpMap[1102]);
       }
       const bucketKey = getBucketKey(trade);
       const existing = positions[user].tradesMap[tradeKey];
@@ -1181,25 +1174,25 @@ export const useDataStore = create(devtools((set, get) => ({
         const trades = Object.values(positions[user].tradesMap)
           .filter(t => t.NetPos !== 0)
           .slice(0, 2);
-        console.group(`[DIAG] After calculatePositions — user: ${user}`);
-        trades.forEach(t => {
-          console.log(`  Symbol:       ${t.Symbol}`);
-          console.log(`  LTP:          ${t.Ltp}`);
-          console.log(`  Open_price:   ${t.Open_price}`);
-          console.log(`  Close_price:  ${t.Close_price}`);
-          console.log(`  SOD_BuyQty:   ${t.SOD_BuyQty}`);
-          console.log(`  SOD_SellQty:  ${t.SOD_SellQty}`);
-          console.log(`  SOD_BuyPrice: ${t.SOD_BuyPrice}`);
-          console.log(`  SOD_SellPrice:${t.SOD_SellPrice}`);
-          console.log(`  BuyQty:       ${t.BuyQty}`);
-          console.log(`  SellQty:      ${t.SellQty}`);
-          console.log(`  BuyPrice:     ${t.BuyPrice}`);
-          console.log(`  SellPrice:    ${t.SellPrice}`);
-          console.log(`  NetPos:       ${t.NetPos}`);
-          console.log(`  Pnl:          ${t.Pnl}`);
-          console.log(`  cumPnl:       ${t.cumPnl}`);
-          console.log(`  MTM:          ${t.MTM}`);
-        });
+        // console.group(`[DIAG] After calculatePositions — user: ${user}`);
+        // trades.forEach(t => {
+        //   console.log(`  Symbol:       ${t.Symbol}`);
+        //   console.log(`  LTP:          ${t.Ltp}`);
+        //   console.log(`  Open_price:   ${t.Open_price}`);
+        //   console.log(`  Close_price:  ${t.Close_price}`);
+        //   console.log(`  SOD_BuyQty:   ${t.SOD_BuyQty}`);
+        //   console.log(`  SOD_SellQty:  ${t.SOD_SellQty}`);
+        //   console.log(`  SOD_BuyPrice: ${t.SOD_BuyPrice}`);
+        //   console.log(`  SOD_SellPrice:${t.SOD_SellPrice}`);
+        //   console.log(`  BuyQty:       ${t.BuyQty}`);
+        //   console.log(`  SellQty:      ${t.SellQty}`);
+        //   console.log(`  BuyPrice:     ${t.BuyPrice}`);
+        //   console.log(`  SellPrice:    ${t.SellPrice}`);
+        //   console.log(`  NetPos:       ${t.NetPos}`);
+        //   console.log(`  Pnl:          ${t.Pnl}`);
+        //   console.log(`  cumPnl:       ${t.cumPnl}`);
+        //   console.log(`  MTM:          ${t.MTM}`);
+        // });
         console.groupEnd();
       });
     }

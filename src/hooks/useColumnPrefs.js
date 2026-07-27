@@ -24,16 +24,25 @@ export function useColumnPrefs(columnIds, userKey) {
       const knownSet = new Set(columnIds);
       const reconciledOrder = customColumns.order.filter(id => knownSet.has(id));
       const savedSet = new Set(reconciledOrder);
+      const newColumns = []; // columns not in saved config
       columnIds.forEach((id, idx) => {
         if (!savedSet.has(id)) {
           const prevInNatural = columnIds.slice(0, idx).reverse().find(pid => savedSet.has(pid));
           const insertAfter = prevInNatural ? reconciledOrder.indexOf(prevInNatural) : -1;
           reconciledOrder.splice(insertAfter + 1, 0, id);
           savedSet.add(id);
+          newColumns.push(id);
         }
       });
+
+      // Default hidden columns — applied to new columns not in saved config
+      const DEFAULT_HIDDEN = new Set(['othersMtm']);
+      const savedHidden = new Set((customColumns.hidden || []).filter(id => knownSet.has(id)));
+      // Hide new columns that should be hidden by default
+      newColumns.forEach(id => { if (DEFAULT_HIDDEN.has(id)) savedHidden.add(id); });
+
       setOrder(reconciledOrder);
-      setHidden(new Set((customColumns.hidden || []).filter(id => knownSet.has(id))));
+      setHidden(savedHidden);
     } else {
       setOrder(columnIds);
       setHidden(new Set());
@@ -81,7 +90,7 @@ export function useColumnPrefs(columnIds, userKey) {
 
   const resetToDefault = useCallback(() => {
     setOrder(columnIds);
-    setHidden(new Set());
+    setHidden(new Set(['othersMtm']));
   }, []);
 
   return { order, hidden, toggleVisibility, reorder, resetToDefault, loaded };

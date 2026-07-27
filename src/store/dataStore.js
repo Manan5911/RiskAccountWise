@@ -179,7 +179,7 @@ export const useDataStore = create(devtools((set, get) => ({
           const ltpTime = rest.join(','); // timestamp may contain commas
 
           const ltpUpdateMap = {
-            [securityId]: {
+            [`${securityId}_${exchange}`]: {
               ltp: parseFloat(ltp),
               exchange,
               bid: parseFloat(bid),
@@ -871,7 +871,7 @@ export const useDataStore = create(devtools((set, get) => ({
 
       for (const tradeKey in pos.tradesMap) {
         const trade = pos.tradesMap[tradeKey];
-        const secKey = String(trade.SecurityId);
+        const secKey = `${trade.SecurityId}_${trade.SecurityExchange}`;
         const tick = ltpUpdateMap[secKey];
         if (!tick) continue;
 
@@ -1047,7 +1047,9 @@ export const useDataStore = create(devtools((set, get) => ({
     }
 
     const ltpMap = {};
-    LTP_Data.forEach((item) => { ltpMap[item.SecurityId] = item.LTP ?? 0; });
+    LTP_Data.forEach((item) => {
+      ltpMap[`${item.SecurityId}_${item.Exchange}`] = item.LTP ?? 0;
+    });
 
     const today = new Date();
     const todayNum =
@@ -1093,7 +1095,7 @@ export const useDataStore = create(devtools((set, get) => ({
         }
       }
 
-      const ltp = ltpMap[trade.SecurityId] ?? 0;
+      const ltp = ltpMap[`${trade.SecurityId}_${trade.SecurityExchange}`] ?? 0;
       const tradeKey = `${trade.Account}_${trade.SecurityExchange}_${trade.SecurityId}`;
       // TEMP DIAG
       if (trade.SecurityExchange === 'IFSC' && trade.Symbol === 'NIFTY') {
@@ -1160,7 +1162,7 @@ export const useDataStore = create(devtools((set, get) => ({
       p.totalP = (p.pw||0)+(p.pw1||0)+(p.pw2||0)+(p.pw3||0)+(p.pw4||0)+(p.pw5||0);
 
       // Register this user against this SecurityId for LTP relevance filtering
-      const secKey = String(trade.SecurityId);
+      const secKey = `${trade.SecurityId}_${trade.SecurityExchange}`;
       if (!securityToUsers[secKey]) securityToUsers[secKey] = new Set();
       securityToUsers[secKey].add(user);
     }

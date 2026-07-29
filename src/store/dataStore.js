@@ -107,7 +107,8 @@ export const useDataStore = create(devtools((set, get) => ({
   MappedUsers: [],
   CustomerAccounts: [],
   positions: {},
-  securityToUsers: {},
+  securityToAccounts: {},
+  userMarginSummary: {},   // margin/premiumBuy computed per qt user — used by agg rows
 
   // ── Margin state ────────────────────────────────────────────────────────────
   SpanMap: [],          // [{ user, ctcl, exch, spanMargin, exposureMargin, totalMargin, maxMargin }]
@@ -167,7 +168,7 @@ export const useDataStore = create(devtools((set, get) => ({
 
         if (Type === 2) {
           if (!Data) return;
-          get().calculatePositions([Data], 2);
+          get().queueTradeUpdate(Data);
 
         } else if (Type === 4) {
           // Data is a comma-delimited string: "SecurityId,Exchange,LTP,Bid,Ask,LtpTime"
@@ -404,73 +405,27 @@ export const useDataStore = create(devtools((set, get) => ({
     const { positions, CustomerAccounts } = get();
     if (!CustomerAccounts?.length) return;
 
-    // TEMP DEBUG
-    // console.log('=== CustomerAccounts DEBUG ===');
-    // console.log('Total CustomerAccounts:', CustomerAccounts.length);
-    // console.log('All Category1 values:', [...new Set(CustomerAccounts.map(ca => ca.Category1))]);
-    // console.log('M01 search:', CustomerAccounts.filter(ca => JSON.stringify(ca).toLowerCase().includes('m01')));
-    // console.log('MANS01 search:', CustomerAccounts.filter(ca => JSON.stringify(ca).toLowerCase().includes('mans01')));
-    // console.log('==============================');
-
-//     const unmatchedUsers = [];
-// for (const user in positions) {
-//   const pos = positions[user];
-//   let found = false;
-//   for (const tradeKey in pos.tradesMap) {
-//     const account = pos.tradesMap[tradeKey].Account;
-//     if (!account) continue;
-//     const match = CustomerAccounts.find((ca) => ca.Account && ca.Account.includes(account));
-//     if (match) { found = true; break; }
-//   }
-//   if (!found) unmatchedUsers.push({
-//     user,
-//     accounts: [...new Set(Object.values(pos.tradesMap).map(t => t.Account))]
-//   });
-// }
-// console.log('Unmatched users:', unmatchedUsers);
-
-// const cat1Values = [...new Set(CustomerAccounts.map(ca => ca.Category1))];
-// console.log('Available Category1 groups:', cat1Values);
-
+    // Position key IS the account now, so this is a direct lookup —
+    // no need to dig through tradesMap to find an account to match on.
     const updated = { ...positions };
 
-    for (const user in updated) {
-      const pos = updated[user];
+    for (const account in updated) {
+      const pos = updated[account];
 
-      // Log the first account from this user's trades
-      const firstTradeKey = Object.keys(pos.tradesMap)[0];
-      // if (firstTradeKey) {
-      //   console.log(`User: ${user} | Trade account: "${pos.tradesMap[firstTradeKey].Account}"`);
-      // }
+      const match = CustomerAccounts.find((ca) =>
+        ca.Account && (
+          ca.Account === account ||
+          ca.Account.startsWith(account + ',') ||
+          ca.Account.endsWith(',' + account) ||
+          ca.Account.includes(',' + account + ',')
+        )
+      );
 
-      let customerInfo = { Category1: 'Unassigned', Category2: 'Unassigned' };
-
-      for (const tradeKey in pos.tradesMap) {
-        const account = pos.tradesMap[tradeKey].Account;
-        if (!account) continue;
-
-        const match = CustomerAccounts.find((ca) =>
-          ca.Account && (
-            ca.Account === account ||
-            ca.Account.startsWith(account + ',') ||
-            ca.Account.endsWith(',' + account) ||
-            ca.Account.includes(',' + account + ',')
-          )
-        );
-
-        // Log whether match was found for this account
-        // console.log(`  → account "${account}" match:`, match || 'NOT FOUND');
-
-        if (match) {
-          customerInfo = {
-            Category1: match.Category1 || 'Unassigned',
-            Category2: match.Category2 || 'Unassigned',
-          };
-          break;
-        }
-      }
-
-      updated[user] = { ...pos, ...customerInfo };
+      updated[account] = {
+        ...pos,
+        Category1: match ? (match.Category1 || 'Unassigned') : 'Unassigned',
+        Category2: match ? (match.Category2 || 'Unassigned') : 'Unassigned',
+      };
     }
 
     set({ positions: updated });
@@ -747,25 +702,26 @@ export const useDataStore = create(devtools((set, get) => ({
     get().updateSpanMargin(updatedSpanMap);
   },
 
-  // ── updateSpanMargin — distributes SpanMap entries into each position ────────
-  // Mirrors Angular's updateSpanMargin exactly:
-  //   NSEFO  → nseMarginAbs + nseMarginMax
-  //   BSEED  → bseMarginAbs + bseMarginMax
-  //   IFSC   → ifscMarginAbs
-  //   totalMargin = ifscMarginAbs * referenceRate + nseMarginAbs + premiumBuy
-  //   MarginPer   = (nseMarginAbs / availableMargin) * 100
+  // ── updateSpanMargin ─────────────────────────────────────────────────────────
+  // Margin is genuinely qt-user-wise data from the backend, so it's computed
+  // per qt user here (into userMarginSummary) rather than per account.
+  // premiumBuy is summed across every account position that lists this qt
+  // user in its `qtUsers` set — so a shared account's premiumBuy counts once
+  // per qt user it's mapped to, same as everything else in the duplicate-
+  // under-each-group approach we're using for the agg rows.
   updateSpanMargin: (spanMap) => {
     const { positions, userMargin, referenceRate } = get();
-
     if (!spanMap || spanMap.length === 0) return;
-    if (!positions || Object.keys(positions).length === 0) return;
 
-    const updated = { ...positions };
+    const qtUsers = new Set();
+    Object.values(positions).forEach((pos) => {
+      (pos.qtUsers || []).forEach((u) => qtUsers.add(u));
+    });
+    spanMap.forEach((entry) => qtUsers.add(entry.user));
 
-    for (const user in updated) {
-      const pos = updated[user];
+    const summary = {};
 
-      // Reset all margin fields before re-summing
+    for (const user of qtUsers) {
       let nseMarginAbs = 0;
       let nseMarginMax = 0;
       let bseMarginAbs = 0;
@@ -788,16 +744,16 @@ export const useDataStore = create(devtools((set, get) => ({
         }
       }
 
-      // premiumBuy — sum across all trades in tradesMap
-      // Matches Angular's calculateTotalValues() premBuy accumulation
       let premiumBuy = 0;
-      for (const tradeKey in pos.tradesMap) {
-        premiumBuy += calcTradePremiumBuy(pos.tradesMap[tradeKey]);
+      for (const pos of Object.values(positions)) {
+        if (!pos.qtUsers || !pos.qtUsers.has(user)) continue;
+        for (const tradeKey in pos.tradesMap) {
+          premiumBuy += calcTradePremiumBuy(pos.tradesMap[tradeKey]);
+        }
       }
 
       const totalMargin = ifscMarginAbs * referenceRate + nseMarginAbs + premiumBuy;
 
-      // MarginPer: nseMarginAbs as % of available margin assigned to this user
       let MarginPer = 0;
       const userMarginEntry = userMargin.find((i) => i.Name === user);
       if (userMarginEntry && userMarginEntry.Amount > 0) {
@@ -806,24 +762,48 @@ export const useDataStore = create(devtools((set, get) => ({
         );
       }
 
-      updated[user] = {
-        ...pos,
-        nseMarginAbs,
-        nseMarginMax,
-        bseMarginAbs,
-        bseMarginMax,
-        ifscMarginAbs,
-        totalMargin,
-        premiumBuy,
-        MarginPer,
-        spanEntries: userSpanEntries, // kept for future tooltip drill-down
+      summary[user] = {
+        nseMarginAbs, nseMarginMax, bseMarginAbs, bseMarginMax, ifscMarginAbs,
+        totalMargin, premiumBuy, MarginPer,
+        spanEntries: userSpanEntries,
       };
     }
 
-    set({ positions: updated });
+    set({ userMarginSummary: summary });
   },
 
   // ── applyLtpUpdate — throttled to max 10 renders/sec ─────────────────────────
+  // ── queueTradeUpdate — batches bursty live trade messages ────────────────────
+  // Mirrors the LTP throttle below: multiple Type===2 trade messages arriving
+  // within the window get coalesced into a single calculatePositions call
+  // instead of one full clone + full re-render per message.
+  _pendingTrades: [],
+  _tradeTimer: null,
+
+  queueTradeUpdate: (tradeData) => {
+    const s = get();
+    s._pendingTrades.push(tradeData);
+    if (s._tradeTimer) return;
+    s._tradeTimer = setTimeout(() => {
+      const s2 = get();
+      const batch = s2._pendingTrades;
+      s2._pendingTrades = [];
+      s2._tradeTimer = null;
+      if (batch.length > 0) {
+        try {
+          get().calculatePositions(batch, 2);
+        } catch (err) {
+          console.error('calculatePositions failed on trade batch — falling back to per-trade processing', err);
+          // Reprocess one at a time so a single bad record in the batch
+          // can't take the rest of a legitimate burst down with it.
+          batch.forEach((t) => {
+            try { get().calculatePositions([t], 2); } catch (e) { console.error('Dropping malformed trade update:', t, e); }
+          });
+        }
+      }
+    }, 200);
+  },
+
   _pendingLtpMap: {},
   _ltpTimer: null,
 
@@ -837,20 +817,20 @@ export const useDataStore = create(devtools((set, get) => ({
       s2._pendingLtpMap = {};
       s2._ltpTimer = null;
       get()._applyLtpBatch(batch);
-    }, 100);
+    }, 300);
   },
 
   _applyLtpBatch: (ltpUpdateMap) => {
-    const { positions, securityToUsers } = get();
+    const { positions, securityToAccounts } = get();
 
     const relevantSecurityIds = Object.keys(ltpUpdateMap).filter(
-      (secId) => securityToUsers[secId] && securityToUsers[secId].size > 0
+      (secId) => securityToAccounts[secId] && securityToAccounts[secId].size > 0
     );
     if (relevantSecurityIds.length === 0) return;
 
-    const affectedUsers = new Set();
+    const affectedAccounts = new Set();
     relevantSecurityIds.forEach((secId) => {
-      securityToUsers[secId].forEach((u) => affectedUsers.add(u));
+      securityToAccounts[secId].forEach((a) => affectedAccounts.add(a));
     });
 
     const today = new Date();
@@ -862,11 +842,11 @@ export const useDataStore = create(devtools((set, get) => ({
     const updatedPositions = { ...positions };
     let anyChange = false;
 
-    for (const user of affectedUsers) {
-      const pos = positions[user];
+    for (const account of affectedAccounts) {
+      const pos = positions[account];
       if (!pos) continue;
 
-      let userChanged = false;
+      let acctChanged = false;
       const newTradesMap = { ...pos.tradesMap };
 
       for (const tradeKey in pos.tradesMap) {
@@ -883,27 +863,27 @@ export const useDataStore = create(devtools((set, get) => ({
         const mtm = calculateMtm(refreshed, newLtp);
 
         newTradesMap[tradeKey] = { ...refreshed, Pnl: pnl, cumPnl, MTM: mtm };
-        userChanged = true;
+        acctChanged = true;
       }
 
-      if (userChanged) {
-        updatedPositions[user] = { ...pos, tradesMap: newTradesMap };
+      if (acctChanged) {
+        updatedPositions[account] = { ...pos, tradesMap: newTradesMap };
         anyChange = true;
       }
     }
 
     // ── DIAGNOSTIC ─────────────────────────────────────────────────
-    const diagUsers = Object.keys(updatedPositions).slice(0, 2);
-    diagUsers.forEach(user => {
-      if (updatedPositions[user] === positions[user]) return;
-      const newTrades = Object.values(updatedPositions[user].tradesMap)
+    const diagAccounts = Object.keys(updatedPositions).slice(0, 2);
+    diagAccounts.forEach(account => {
+      if (updatedPositions[account] === positions[account]) return;
+      const newTrades = Object.values(updatedPositions[account].tradesMap)
         .filter(t => t.NetPos !== 0)
         .slice(0, 2);
-      // console.group(`[DIAG] After LTP socket update — user: ${user}`);
+      // console.group(`[DIAG] After LTP socket update — account: ${account}`);
       newTrades.forEach(t => {
-        const oldTrade = positions[user]?.tradesMap[
-          Object.keys(positions[user].tradesMap).find(k =>
-            positions[user].tradesMap[k].Symbol === t.Symbol
+        const oldTrade = positions[account]?.tradesMap[
+          Object.keys(positions[account].tradesMap).find(k =>
+            positions[account].tradesMap[k].Symbol === t.Symbol
           )
         ];
         // console.log(`  Symbol:      ${t.Symbol}`);
@@ -964,10 +944,15 @@ export const useDataStore = create(devtools((set, get) => ({
       ) || null;
     };
 
-    const createPosition = (user, account) => {
+    // A position is now one row per trade Account. `qtUsers` collects every
+    // QT login this account has appeared under (an account can be mapped
+    // to more than one QT user) — kept purely for reference/display, it no
+    // longer drives aggregation the way `USER` used to.
+    const createPosition = (account, owners) => {
       const match = account ? getAccountCustomer(account) : null;
       return {
-      user,
+      account,
+      qtUsers: new Set(owners || []),
       Category1: match ? (match.Category1 || 'Unassigned') : 'Unassigned',
       Category2: match ? (match.Category2 || 'Unassigned') : 'Unassigned',
       tradesMap: {},
@@ -976,7 +961,10 @@ export const useDataStore = create(devtools((set, get) => ({
       pw: 0, pw1: 0, pw2: 0, pw3: 0, pw4: 0, pw5: 0,
       totalC: 0, totalP: 0,
       stocks: 0,
-      // Margin fields — populated by updateSpanMargin after trades load
+      // Margin is reported qt-user-wise by the backend, not per account, and
+      // one account can map to more than one qt user — so we deliberately do
+      // NOT attribute margin to account-level rows at this stage. It'll be
+      // shown at the qt-user/CTCL rollup level once that grouping ships.
       nseMarginAbs: 0,
       nseMarginMax: 0,
       bseMarginAbs: 0,
@@ -1038,10 +1026,11 @@ export const useDataStore = create(devtools((set, get) => ({
     } else {
       const existing = get().positions;
       positions = {};
-      for (const user in existing) {
-        positions[user] = {
-          ...existing[user],
-          tradesMap: { ...existing[user].tradesMap },
+      for (const account in existing) {
+        positions[account] = {
+          ...existing[account],
+          qtUsers: new Set(existing[account].qtUsers),
+          tradesMap: { ...existing[account].tradesMap },
         };
       }
     }
@@ -1057,54 +1046,46 @@ export const useDataStore = create(devtools((set, get) => ({
       (today.getMonth() + 1) * 100 +
       today.getDate();
 
-    let normalizedTrades = trades;
-    if (type === 2) {
-      normalizedTrades = [];
-      for (const trade of trades) {
-        if (trade.MappedUsers && trade.MappedUsers.length > 1) {
-          for (const mappedUser of trade.MappedUsers) {
-            normalizedTrades.push({ ...trade, USER: mappedUser });
-          }
-        } else {
-          normalizedTrades.push(trade);
-        }
-      }
-    }
+    // securityToAccounts index — rebuilt fresh for type 1, extended for type 2
+    const securityToAccounts = type === 1 ? {} : { ...get().securityToAccounts };
 
-    // securityToUsers index — rebuilt fresh for type 1, extended for type 2
-    const securityToUsers = type === 1 ? {} : { ...get().securityToUsers };
+    for (const trade of trades) {
+      const account = trade.Account;
+      if (!account) continue;
 
-    for (const trade of normalizedTrades) {
-      const user = trade.USER;
-      if (!user || !MappedUsers.includes(user)) continue;
+      // Visibility: a trade is shown if any of its owning QT users are
+      // mapped to this session. Falls back to trade.USER if MappedUsers
+      // isn't present on the trade payload. This is the only job
+      // MappedUsers does now — one row per account either way, no
+      // duplication.
+      const owners = (trade.MappedUsers && trade.MappedUsers.length > 0)
+        ? trade.MappedUsers
+        : (trade.USER ? [trade.USER] : []);
+      if (!owners.some((u) => MappedUsers.includes(u))) continue;
 
       if (type === 1) {
         const netQty = (trade.TotalQtyBuy || 0) + (trade.TotalQtySell || 0);
         if (netQty === 0) continue;
       }
 
-     if (!positions[user]) positions[user] = createPosition(user, trade.Account);
+      if (!positions[account]) {
+        positions[account] = createPosition(account, owners);
+      } else {
+        owners.forEach((u) => positions[account].qtUsers.add(u));
+      }
 
-      if (positions[user] &&
-          positions[user].Category1 === 'Unassigned' &&
-          trade.Account) {
-        const match = getAccountCustomer(trade.Account);
+      if (positions[account].Category1 === 'Unassigned') {
+        const match = getAccountCustomer(account);
         if (match) {
-          positions[user].Category1 = match.Category1 || 'Unassigned';
-          positions[user].Category2 = match.Category2 || 'Unassigned';
+          positions[account].Category1 = match.Category1 || 'Unassigned';
+          positions[account].Category2 = match.Category2 || 'Unassigned';
         }
       }
 
       const ltp = ltpMap[`${trade.SecurityId}_${trade.SecurityExchange}`] ?? 0;
       const tradeKey = `${trade.Account}_${trade.SecurityExchange}_${trade.SecurityId}`;
-      // TEMP DIAG
-      if (trade.SecurityExchange === 'IFSC' && trade.Symbol === 'NIFTY') {
-        // console.log('[IFSC DIAG] raw trade.SecurityId:', trade.SecurityId, 'type:', typeof trade.SecurityId, 'ltp from ltpMap:', ltp);
-        // console.log('[IFSC DIAG] ltpMap keys sample:', Object.keys(ltpMap).slice(0, 5));
-        // console.log('[IFSC DIAG] ltpMap["1102"]:', ltpMap['1102'], 'ltpMap[1102]:', ltpMap[1102]);
-      }
       const bucketKey = getBucketKey(trade);
-      const existing = positions[user].tradesMap[tradeKey];
+      const existing = positions[account].tradesMap[tradeKey];
 
       let previousNetPos = 0;
       let newNetPos = 0;
@@ -1153,48 +1134,30 @@ export const useDataStore = create(devtools((set, get) => ({
       finalTrade = { ...finalTrade, Pnl: pnl, cumPnl, MTM: mtm };
 
       newNetPos = finalTrade.NetPos;
-      positions[user].tradesMap[tradeKey] = finalTrade;
-      positions[user][bucketKey] =
-        (positions[user][bucketKey] || 0) - previousNetPos + newNetPos;
+      positions[account].tradesMap[tradeKey] = finalTrade;
+      positions[account][bucketKey] =
+        (positions[account][bucketKey] || 0) - previousNetPos + newNetPos;
 
-      const p = positions[user];
+      const p = positions[account];
       p.totalC = (p.cw||0)+(p.cw1||0)+(p.cw2||0)+(p.cw3||0)+(p.cw4||0)+(p.cw5||0);
       p.totalP = (p.pw||0)+(p.pw1||0)+(p.pw2||0)+(p.pw3||0)+(p.pw4||0)+(p.pw5||0);
 
-      // Register this user against this SecurityId for LTP relevance filtering
+      // Register this account against this SecurityId for LTP relevance filtering
       const secKey = `${trade.SecurityId}_${trade.SecurityExchange}`;
-      if (!securityToUsers[secKey]) securityToUsers[secKey] = new Set();
-      securityToUsers[secKey].add(user);
+      if (!securityToAccounts[secKey]) securityToAccounts[secKey] = new Set();
+      securityToAccounts[secKey].add(account);
     }
 
-    set({ positions, securityToUsers });
+    set({ positions, securityToAccounts });
 
-    // ── DIAGNOSTIC ─────────────────────────────────────────────────
+    // ── DIAGNOSTIC (kept as a hook point, all logging currently disabled) ──
     if (type === 2) {
-      const diagUsers = Object.keys(positions).slice(0, 2);
-      diagUsers.forEach(user => {
-        const trades = Object.values(positions[user].tradesMap)
+      const diagAccounts = Object.keys(positions).slice(0, 2);
+      diagAccounts.forEach(account => {
+        const trades = Object.values(positions[account].tradesMap)
           .filter(t => t.NetPos !== 0)
           .slice(0, 2);
-        // console.group(`[DIAG] After calculatePositions — user: ${user}`);
-        // trades.forEach(t => {
-        //   console.log(`  Symbol:       ${t.Symbol}`);
-        //   console.log(`  LTP:          ${t.Ltp}`);
-        //   console.log(`  Open_price:   ${t.Open_price}`);
-        //   console.log(`  Close_price:  ${t.Close_price}`);
-        //   console.log(`  SOD_BuyQty:   ${t.SOD_BuyQty}`);
-        //   console.log(`  SOD_SellQty:  ${t.SOD_SellQty}`);
-        //   console.log(`  SOD_BuyPrice: ${t.SOD_BuyPrice}`);
-        //   console.log(`  SOD_SellPrice:${t.SOD_SellPrice}`);
-        //   console.log(`  BuyQty:       ${t.BuyQty}`);
-        //   console.log(`  SellQty:      ${t.SellQty}`);
-        //   console.log(`  BuyPrice:     ${t.BuyPrice}`);
-        //   console.log(`  SellPrice:    ${t.SellPrice}`);
-        //   console.log(`  NetPos:       ${t.NetPos}`);
-        //   console.log(`  Pnl:          ${t.Pnl}`);
-        //   console.log(`  cumPnl:       ${t.cumPnl}`);
-        //   console.log(`  MTM:          ${t.MTM}`);
-        // });
+        // console.group(`[DIAG] After calculatePositions — account: ${account}`);
         console.groupEnd();
       });
     }
@@ -1224,7 +1187,8 @@ export const useDataStore = create(devtools((set, get) => ({
       MappedUsers: [],
       CustomerAccounts: [],
       positions: {},
-      securityToUsers: {},
+      securityToAccounts: {},
+      userMarginSummary: {},
       SpanMap: [],
       userMargin: [],
       referenceRate: 1,

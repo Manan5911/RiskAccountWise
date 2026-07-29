@@ -268,6 +268,10 @@ const ExpandedRow = ({ trades, colId, onClose, onRefresh, totalCols }) => {
               {trades.map((trade, i) => {
                 const pnl = trade.Pnl || 0;
                 const mtm = trade.MTM || 0;
+                const pnlRounded = (pnl / 100000).toFixed(2);
+                const pnlIsZero = parseFloat(pnlRounded) === 0;
+                const mtmRounded = (mtm / 100000).toFixed(2);
+                const mtmIsZero = parseFloat(mtmRounded) === 0;
                 return (
                   <tr key={i} style={{ background: i % 2 === 0 ? C.expandedBg : '#eef3fc' }}>
                     <td style={{ ...ptd, color: C.text, fontWeight: 600 }} title={trade.Symbol}>
@@ -280,11 +284,11 @@ const ExpandedRow = ({ trades, colId, onClose, onRefresh, totalCols }) => {
                     <td style={{ ...ptd, color: C.text }}>
                       {fmtNum(trade.Ltp || 0)}
                     </td>
-                    <td style={{ ...ptd, color: pnl > 0 ? C.pos : pnl < 0 ? C.neg : C.zero }}>
-                      {pnl === 0 ? '—' : fmtNum((pnl / 100000).toFixed(2))}
+                    <td style={{ ...ptd, color: pnlIsZero ? C.zero : pnl > 0 ? C.pos : C.neg }}>
+                      {pnlIsZero ? '0.00' : fmtNum(pnlRounded)}
                     </td>
-                    <td style={{ ...ptd, color: mtm > 0 ? C.pos : mtm < 0 ? C.neg : C.zero }}>
-                      {mtm === 0 ? '—' : fmtNum((mtm / 100000).toFixed(2))}
+                    <td style={{ ...ptd, color: mtmIsZero ? C.zero : mtm > 0 ? C.pos : C.neg }}>
+                      {mtmIsZero ? '0.00' : fmtNum(mtmRounded)}
                     </td>
                     <td style={ptd}>{fmtQty(trade.SOD_Qty)}</td>
                     <td style={ptd}>{fmtPrice(trade.SOD_Price)}</td>
@@ -431,7 +435,14 @@ const MarginExpandedRow = ({ pos, colId, onClose, totalCols, referenceRate }) =>
 // ─── Value helpers ────────────────────────────────────────────────────────────
 const resolveValKey = (v) => v > 0 ? 'pos' : v < 0 ? 'neg' : 'zero';
 const numVal = (v) => ({ display: v === 0 ? '—' : v, styleKey: resolveValKey(v) });
-const decimalVal = (v) => ({ display: v === 0 ? '—' : fmtNum((v / 100000).toFixed(2)), styleKey: resolveValKey(v) });
+const decimalVal = (v) => {
+  const rounded = (v / 100000).toFixed(2);
+  const isZero = parseFloat(rounded) === 0; // catches -0.00 as well as 0.00
+  return {
+    display: isZero ? '0.00' : fmtNum(rounded),
+    styleKey: isZero ? 'zero' : resolveValKey(v),
+  };
+};
 const pairVal = (c, p) => ({
   cDisplay: c === 0 ? '—' : fmtNum(c),
   pDisplay: p === 0 ? '—' : fmtNum(p),
@@ -465,8 +476,8 @@ const MarginCell = ({ display, styleKey, dark }) => (
 // ─── Column definitions ───────────────────────────────────────────────────────
 // NOTE: 'user' is always rendered first and is never hideable/reorderable —
 // it is handled separately from the configurable column list below.
-const USER_COLUMN = {
-  id: 'user', accessorKey: 'user', header: 'User', isPaired: false, size: 120,
+const ACCOUNT_COLUMN = {
+  id: 'account', accessorKey: 'account', header: 'Account', isPaired: false, size: 120,
   cell: ({ getValue }) => <span style={S.userText}>{getValue()}</span>,
 };
 
@@ -626,7 +637,7 @@ const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns }) => {
       style={{ background: bg, cursor: 'pointer', userSelect: 'none' }}
     >
       {columns.map((col, i) => {
-        const isUserCol = col.id === 'user';
+        const isUserCol = col.id === 'account';
         const isPaired = col.isPaired;
 
         const tdStyle = {
@@ -768,7 +779,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
 
   // ── Column resizing ──────────────────────────────────────────────────────────
   const defaultColWidths = useMemo(() => {
-    const map = { user: USER_COLUMN.size };
+    const map = { account: ACCOUNT_COLUMN.size };
     COLUMNS.forEach(c => { map[c.id] = c.size; });
     return map;
   }, []);
@@ -824,6 +835,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
   const customGroupingFromStore   = useDataStore(s => s.customGrouping);
   const referenceRate             = useDataStore(s => s.referenceRate);
   const saveCustomGroupingToStore = useDataStore(state => state.saveCustomGrouping);
+  const userMarginSummary         = useDataStore(s => s.userMarginSummary);
   const port = window.location.port || '80';
 
   const [customGroups, setCustomGroups] = useState([]);
@@ -846,7 +858,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       .filter((id) => !hiddenCols.has(id))
       .map((id) => byId.get(id))
       .filter(Boolean);
-    return [USER_COLUMN, ...rest];
+    return [ACCOUNT_COLUMN, ...rest];
   }, [colOrder, hiddenCols]);
 
   const totalCols = visibleColDefs.length;
@@ -900,7 +912,13 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     const livePositions = useDataStore.getState().positions;
     setExpanded(prev => {
       if (!prev || prev.type !== 'trade') return prev;
-      const pos = livePositions[prev.userKey];
+      // prev.userKey is either a plain account key (flat rows) or a
+      // composite `${qtUser}:::${account}` key (grouped rows) — positions
+      // in the store are keyed by plain account either way.
+      const acctKey = prev.userKey.includes(':::')
+        ? prev.userKey.split(':::')[1]
+        : prev.userKey;
+      const pos = livePositions[acctKey];
       if (!pos) return prev;
       const bucketKeys = BUCKET_KEYS[prev.colId] || [];
       const trades = Object.values(pos.tradesMap).filter(t =>
@@ -915,7 +933,24 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     });
   }, []);
 
-  const groups = useMemo(() => buildGroups(positions, customGroups), [positions, customGroups]);
+  // const groups = useMemo(() => buildGroups(positions, customGroups), [positions, customGroups]);
+  // Custom grouping (GroupingModal) stays parked — `groups` stays null so
+  // that code path (below) remains dead for now.
+  const groups = null;
+
+  // Default view: one aggregate row per qt user, with that user's trade
+  // accounts nested underneath. An account mapped to more than one qt user
+  // appears — in full — under each of those users' groups.
+  const userGroups = useMemo(() => {
+    const map = {};
+    Object.values(positions).forEach((pos) => {
+      (pos.qtUsers || []).forEach((u) => {
+        if (!map[u]) map[u] = [];
+        map[u].push(pos);
+      });
+    });
+    return map;
+  }, [positions]);
 
   const allUserKeys = useMemo(() => Object.keys(positions).sort(), [positions]);
 
@@ -994,8 +1029,8 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     if (groupName && groupName.toLowerCase().includes(q)) return posList;
 
     return posList.filter(pos => {
-      // Match user name
-      if ((pos.user || '').toLowerCase().includes(q)) return true;
+      // Match account
+      if ((pos.account || '').toLowerCase().includes(q)) return true;
 
       // Match scalar bucket values
       const scalarBuckets = ['stocks', 'niftyFut', 'bnfFut'];
@@ -1025,7 +1060,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     });
   };
 
-  const SORTABLE = new Set(['user','pnl','cumPnl','mtm','nseMargin','totalMargin','nseMaxMargin']);
+  const SORTABLE = new Set(['account','pnl','cumPnl','mtm','nseMargin','totalMargin','nseMaxMargin']);
 
   const sortIcon = (colId) => {
     if (!SORTABLE.has(colId)) return null;
@@ -1062,7 +1097,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     return [...posList].sort((a, b) => {
       let aVal, bVal;
       switch (colId) {
-        case 'user':       aVal = a.user || '';            bVal = b.user || '';            return mult * aVal.localeCompare(bVal);
+        case 'account':    aVal = a.account || '';         bVal = b.account || '';         return mult * aVal.localeCompare(bVal);
         case 'pnl':        aVal = Object.values(a.tradesMap||{}).reduce((s,t)=>s+(t.Pnl||0),0);    bVal = Object.values(b.tradesMap||{}).reduce((s,t)=>s+(t.Pnl||0),0);    break;
         case 'cumPnl':     aVal = Object.values(a.tradesMap||{}).reduce((s,t)=>s+(t.cumPnl||0),0); bVal = Object.values(b.tradesMap||{}).reduce((s,t)=>s+(t.cumPnl||0),0); break;
         case 'mtm':        aVal = Object.values(a.tradesMap||{}).reduce((s,t)=>s+(t.MTM||0),0);    bVal = Object.values(b.tradesMap||{}).reduce((s,t)=>s+(t.MTM||0),0);    break;
@@ -1090,7 +1125,7 @@ return (
               type="text"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search user..."
+              placeholder="Search account..."
               style={{
                 paddingLeft: '22px', paddingRight: searchQuery ? '22px' : '8px',
                 paddingTop: '4px', paddingBottom: '4px',
@@ -1129,7 +1164,7 @@ return (
               <th key={col.id}
                 onClick={() => SORTABLE.has(col.id) && toggleSort(col.id)}
                 style={{
-                  ...(col.id === 'user' ? S.thUser : S.th),
+                  ...(col.id === 'account' ? S.thUser : S.th),
                   ...(col.isPaired ? S.thGrouped : {}),
                   position: 'relative',
                   cursor: SORTABLE.has(col.id) ? 'pointer' : 'default',
@@ -1173,68 +1208,109 @@ return (
         {/* ── Body ── */}
         <tbody>
           {groups === null ? (
-            sortPositions(filterPositions(Object.values(positions))).length === 0 ? (
+            Object.keys(userGroups).sort().every(
+              (u) => filterPositions(userGroups[u], u).length === 0
+            ) ? (
               <tr>
                 <td colSpan={totalCols} style={{
                   padding: '32px', textAlign: 'center',
                   fontSize: '13px', color: C.muted,
                   fontStyle: 'italic',
                 }}>
-                  No users match "{debouncedQuery}"
+                  No accounts match "{debouncedQuery}"
                 </td>
               </tr>
             ) :
-            sortPositions(filterPositions(Object.values(positions)))
-              .map((pos) => {
-                const rowData = buildUserRowData(pos);
-                const userKey = pos.user;
-                const isExpRow = expanded?.userKey === userKey;
-                const rowBg = ROW_BG[userRowIndex % 2];
-                userRowIndex++;
-                return (
-                  <Fragment key={`user-${userKey}`}>
-                    <tr>
-                      {visibleColDefs.map((col) => {
-                        const isUserCol = col.id === 'user';
-                        const isClickable = CLICKABLE.has(col.id);
-                        const isActive = isExpRow && expanded?.colId === col.id;
-                        const tdStyle = {
-                          ...(isUserCol ? S.tdUserBase : S.tdBase),
-                          ...(col.isPaired ? S.tdGrouped : {}),
-                          ...(isClickable ? S.tdClickable : {}),
-                          ...rowBg,
-                          ...(isActive ? { background: '#c3d4f5' } : {}),
-                        };
-                        if (isUserCol) {
-                          return (
-                            <td key={col.id} style={tdStyle}>
-                              <div style={{ paddingLeft: 8 }}>
-                                <span style={S.userText}>{pos.user}</span>
-                              </div>
-                            </td>
-                          );
-                        }
-                        const val = rowData[col.id];
-                        const isMarginCol = ['nseMargin', 'totalMargin', 'bseMargin', 'ifscMargin', 'nseMaxMargin'].includes(col.id);
-                        return (
-                          <td key={col.id} style={tdStyle}
-                            onClick={isClickable ? () => handleCellClick(col.id, userKey, pos) : undefined}
-                          >
-                            {col.isPaired ? <PairCell {...val} />
-                              : isMarginCol ? <MarginCell display={val.display} styleKey={val.styleKey} />
-                              : <NumCell display={val.display} styleKey={val.styleKey} />}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                    {isExpRow && (
-                      expanded.type === 'margin'
-                        ? <MarginExpandedRow key={`exp-${userKey}`} pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
-                        : <ExpandedRow key={`exp-${userKey}`} trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
-                    )}
-                  </Fragment>
-                );
-              })
+            Object.keys(userGroups).sort().map((qtUser) => {
+              const filteredAccounts = sortPositions(filterPositions(userGroups[qtUser], qtUser));
+              if (filteredAccounts.length === 0) return null;
+
+              const isExpanded = expandedCat1.has(qtUser);
+              const isEffExpanded = debouncedQuery.trim() ? true : isExpanded;
+
+              // Aggregate stays unfiltered outside of an active search, same
+              // as the cat1/cat2 pattern this reuses.
+              const aggSource = debouncedQuery.trim() ? filteredAccounts : userGroups[qtUser];
+              const rawAgg = aggregateBuckets(aggSource);
+
+              // Margin is genuinely qt-user-level data — pull it from
+              // userMarginSummary rather than summing account rows (which
+              // don't carry margin at all).
+              const margin = userMarginSummary[qtUser] || {};
+              rawAgg.nseMargin    = margin.nseMarginAbs  || 0;
+              rawAgg.totalMargin  = margin.totalMargin   || 0;
+              rawAgg.bseMargin    = margin.bseMarginAbs  || 0;
+              rawAgg.ifscMargin   = margin.ifscMarginAbs || 0;
+              rawAgg.nseMaxMargin = margin.nseMarginMax  || 0;
+              const aggRow = aggToRow(rawAgg);
+
+              return (
+                <Fragment key={`qtuser-${qtUser}`}>
+                  <GroupRow
+                    label={qtUser}
+                    level={1}
+                    isExpanded={isEffExpanded}
+                    onToggle={() => toggleCat1(qtUser)}
+                    aggRow={aggRow}
+                    columns={visibleColDefs}
+                  />
+
+                  {isEffExpanded && filteredAccounts.map((pos) => {
+                    const rowData = buildUserRowData(pos);
+                    const acctKey = pos.account;
+                    // Composite key — the same account can appear under more
+                    // than one qt-user group, so account alone isn't unique.
+                    const rowKey = `${qtUser}:::${acctKey}`;
+                    const isExpRow = !!expanded && expanded.userKey === rowKey;
+                    const rowBg = ROW_BG[userRowIndex % 2];
+                    userRowIndex++;
+                    return (
+                      <Fragment key={`acct-${rowKey}`}>
+                        <tr>
+                          {visibleColDefs.map((col) => {
+                            const isAcctCol = col.id === 'account';
+                            const isClickable = CLICKABLE.has(col.id);
+                            const isActive = isExpRow && expanded?.colId === col.id;
+                            const tdStyle = {
+                              ...(isAcctCol ? S.tdUserBase : S.tdBase),
+                              ...(col.isPaired ? S.tdGrouped : {}),
+                              ...(isClickable ? S.tdClickable : {}),
+                              ...rowBg,
+                              ...(isActive ? { background: '#c3d4f5' } : {}),
+                            };
+                            if (isAcctCol) {
+                              return (
+                                <td key={col.id} style={tdStyle}>
+                                  <div style={{ paddingLeft: 24 }}>
+                                    <span style={S.userText}>{pos.account}</span>
+                                  </div>
+                                </td>
+                              );
+                            }
+                            const val = rowData[col.id];
+                            const isMarginCol = ['nseMargin', 'totalMargin', 'bseMargin', 'ifscMargin', 'nseMaxMargin'].includes(col.id);
+                            return (
+                              <td key={col.id} style={tdStyle}
+                                onClick={isClickable ? () => handleCellClick(col.id, rowKey, pos) : undefined}
+                              >
+                                {col.isPaired ? <PairCell {...val} />
+                                  : isMarginCol ? <MarginCell display={val.display} styleKey={val.styleKey} />
+                                  : <NumCell display={val.display} styleKey={val.styleKey} />}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                        {isExpRow && (
+                          expanded.type === 'margin'
+                            ? <MarginExpandedRow key={`exp-${rowKey}`} pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
+                            : <ExpandedRow key={`exp-${rowKey}`} trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
+              );
+            })
           ) : (
             groups.map(({ cat1, cat2Groups, allUserKeys }) => {
               const filteredCat2Groups = cat2Groups.map(({ cat2, userKeys }) => ({
@@ -1374,7 +1450,7 @@ return (
                 fontSize: '13px', color: C.muted,
                 fontStyle: 'italic',
               }}>
-                No users match "{debouncedQuery}"
+                No accounts match "{debouncedQuery}"
               </td>
             </tr>
           )}
@@ -1382,23 +1458,6 @@ return (
       </table>
 
       </div>
-
-      {/* ── Grouping modal ── */}
-      {groupingOpen && (
-        <GroupingModal
-          allUsers={allUserKeys}
-          initialGroups={customGroups.map(g => ({
-            ...g,
-            directUsers: (g.directUsers || []).filter(u => positions[u]),
-            subGroups: (g.subGroups || []).map(sg => ({
-              ...sg,
-              users: (sg.users || []).filter(u => positions[u]),
-            })),
-          }))}
-          onSave={saveCustomGroups}
-          onClose={() => setGroupingOpen(false)}
-        />
-      )}
 
       {/* ── Column settings modal ── */}
       {settingsOpen && prefsLoaded && (

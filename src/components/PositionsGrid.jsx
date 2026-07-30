@@ -624,7 +624,7 @@ const aggToRow = (agg) => ({
 });
 
 // ─── Group row — Category1 or Category2 ──────────────────────────────────────
-const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns }) => {
+const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns, clickableCells, activeColId, onCellClick }) => {
   const bg = level === 1 ? C.cat1Bg : C.cat2Bg;
   const textClr = level === 1 ? C.cat1Text : C.cat2Text;
   const indent = level === 1 ? 0 : 16;
@@ -633,17 +633,20 @@ const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns }) => {
 
   return (
     <tr
-      onClick={onToggle}
-      style={{ background: bg, cursor: 'pointer', userSelect: 'none' }}
+      onClick={clickableCells ? undefined : onToggle}
+      style={{ background: bg, cursor: clickableCells ? 'default' : 'pointer', userSelect: 'none' }}
     >
       {columns.map((col, i) => {
         const isUserCol = col.id === 'account';
         const isPaired = col.isPaired;
+        const isClickableCol = clickableCells && CLICKABLE.has(col.id);
+        const isActive = clickableCells && activeColId === col.id;
 
         const tdStyle = {
           ...(isUserCol ? S.tdUserBase : S.tdBase),
           ...(isPaired ? S.tdGrouped : {}),
-          background: bg,
+          ...(isClickableCol ? S.tdClickable : {}),
+          background: isActive ? '#c3d4f5' : bg,
           borderBottom: `1px solid ${C.border}`,
         };
 
@@ -651,12 +654,14 @@ const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns }) => {
           return (
             <td key={col.id} style={tdStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingLeft: indent }}>
-               <span style={{
-                  fontSize: '11px', color: textClr,
-                  transition: 'transform 0.15s',
-                  display: 'inline-block',
-                  transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                }}>▶</span>
+                {!clickableCells && (
+                  <span style={{
+                    fontSize: '11px', color: textClr,
+                    transition: 'transform 0.15s',
+                    display: 'inline-block',
+                    transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                  }}>▶</span>
+                )}
                 <span style={{ fontSize, fontWeight: fontW, color: textClr }}>
                   {label}
                 </span>
@@ -671,7 +676,11 @@ const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns }) => {
 
         const isMarginCol = ['nseMargin', 'totalMargin', 'bseMargin', 'ifscMargin', 'nseMaxMargin'].includes(col.id);
         return (
-          <td key={col.id} style={tdStyle}>
+          <td
+            key={col.id}
+            style={tdStyle}
+            onClick={isClickableCol ? () => onCellClick(col.id) : undefined}
+          >
             {isPaired
               ? <PairCell {...val} />
               : isMarginCol
@@ -833,6 +842,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
 
   // Grouping config — persisted to localStorage per viewer
   const customGroupingFromStore   = useDataStore(s => s.customGrouping);
+  const showAccountRows           = useDataStore(s => s.showAccountRows);
   const referenceRate             = useDataStore(s => s.referenceRate);
   const saveCustomGroupingToStore = useDataStore(state => state.saveCustomGrouping);
   const userMarginSummary         = useDataStore(s => s.userMarginSummary);
@@ -915,6 +925,31 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       // prev.userKey is either a plain account key (flat rows) or a
       // composite `${qtUser}:::${account}` key (grouped rows) — positions
       // in the store are keyed by plain account either way.
+      if (prev.userKey.startsWith('agg:::')) {
+        // Aggregate (qt-user) row — rebuild the merged view fresh, same way
+        // the initial click did, so refresh reflects current live data.
+        const qtUser = prev.userKey.slice('agg:::'.length);
+        const accountPositions = Object.values(livePositions).filter(
+          (p) => p.qtUsers && p.qtUsers.has(qtUser)
+        );
+        const mergedTradesMap = {};
+        accountPositions.forEach((pos) => {
+          Object.entries(pos.tradesMap).forEach(([k, t]) => {
+            mergedTradesMap[`${pos.account}::${k}`] = t;
+          });
+        });
+        const bucketKeys = BUCKET_KEYS[prev.colId] || [];
+        const trades = Object.values(mergedTradesMap).filter(t =>
+          bucketKeys.includes(getTradeBucketKey(t)) &&
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+        ).sort((a, b) => {
+          const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
+          if (ac !== bc) return ac - bc;
+          return (a.Symbol || '').localeCompare(b.Symbol || '');
+        });
+        return { ...prev, trades };
+      }
+
       const acctKey = prev.userKey.includes(':::')
         ? prev.userKey.split(':::')[1]
         : prev.userKey;
@@ -1244,18 +1279,57 @@ return (
               rawAgg.nseMaxMargin = margin.nseMarginMax  || 0;
               const aggRow = aggToRow(rawAgg);
 
+              // Composite key for the aggregate row itself — distinct from
+              // any individual account's key.
+              const aggKey = `agg:::${qtUser}`;
+              const isAggExpRow = !!expanded && expanded.userKey === aggKey;
+
+              const handleAggCellClick = (colId) => {
+                // Built only on click, from whatever this group's current
+                // account list is — negligible cost, never runs on render.
+                const mergedTradesMap = {};
+                aggSource.forEach((pos) => {
+                  Object.entries(pos.tradesMap).forEach(([k, t]) => {
+                    mergedTradesMap[`${pos.account}::${k}`] = t;
+                  });
+                });
+                const margin = userMarginSummary[qtUser] || {};
+                const mergedPos = {
+                  account: qtUser,
+                  tradesMap: mergedTradesMap,
+                  nseMarginAbs: margin.nseMarginAbs || 0,
+                  nseMarginMax: margin.nseMarginMax || 0,
+                  bseMarginAbs: margin.bseMarginAbs || 0,
+                  ifscMarginAbs: margin.ifscMarginAbs || 0,
+                  totalMargin: margin.totalMargin || 0,
+                  premiumBuy: margin.premiumBuy || 0,
+                  MarginPer: margin.MarginPer || 0,
+                  spanEntries: margin.spanEntries || [],
+                };
+                handleCellClick(colId, aggKey, mergedPos);
+              };
+
               return (
                 <Fragment key={`qtuser-${qtUser}`}>
                   <GroupRow
                     label={qtUser}
                     level={1}
-                    isExpanded={isEffExpanded}
+                    isExpanded={showAccountRows && isEffExpanded}
                     onToggle={() => toggleCat1(qtUser)}
                     aggRow={aggRow}
                     columns={visibleColDefs}
+                    clickableCells={!showAccountRows}
+                    activeColId={isAggExpRow ? expanded.colId : null}
+                    onCellClick={handleAggCellClick}
                   />
 
-                  {isEffExpanded && filteredAccounts.map((pos) => {
+                  {!showAccountRows && isAggExpRow && (
+                    expanded.type === 'margin'
+                      ? <MarginExpandedRow pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
+                      : <ExpandedRow trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
+                  )}
+
+                  {showAccountRows && isEffExpanded && filteredAccounts.map((pos) => {
                     const rowData = buildUserRowData(pos);
                     const acctKey = pos.account;
                     // Composite key — the same account can appear under more

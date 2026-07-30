@@ -55,7 +55,7 @@ const SocketStatus = ({ isConnected }) => (
 );
 
 // ─── User menu dropdown ───────────────────────────────────────────────────────
-const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping }) => {
+const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows }) => {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef(null);
 
@@ -68,9 +68,10 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping }) => {
   const items = [
     { icon: '▦', label: 'Columns',  action: () => { onOpenColumns();  setOpen(false); } },
     { icon: '⊜', label: 'Grouping', action: () => { onOpenGrouping(); setOpen(false); } },
+    { icon: showAccountRows ? '☑' : '☐', label: 'Show account rows', action: () => { onToggleAccountRows(); setOpen(false); } },
     { divider: true },
     { icon: '⎋', label: 'Logout',   action: () => { onLogout();       setOpen(false); }, danger: true },
-  ];
+];  
 
   return (
     <Box ref={ref} sx={{ position: 'relative' }}>
@@ -133,7 +134,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping }) => {
 };
 
 // ─── Header bar ───────────────────────────────────────────────────────────────
-const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping }) => (
+const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows }) => (
   <Box sx={{
     px: 2, py: 1,
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -150,6 +151,8 @@ const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGro
       onLogout={onLogout}
       onOpenColumns={onOpenColumns}
       onOpenGrouping={onOpenGrouping}
+      showAccountRows={showAccountRows}
+      onToggleAccountRows={onToggleAccountRows}
     />
   </Box>
 );
@@ -201,6 +204,8 @@ export default function Dashboard() {
     fetchCustomGrouping,
     fetchCustomColumns,
     fetchCommonSubscription,
+    fetchShowAccountRows,
+    setShowAccountRows,
   } = useDataStore();
 
   const pendingRequests    = useDataStore((state) => state.pendingRequests);
@@ -208,6 +213,7 @@ export default function Dashboard() {
   const positions          = useDataStore((state) => state.positions);
   const isSocketConnected  = useDataStore((state) => state.isSocketConnected);
   const sessionExpired     = useDataStore((state) => state.sessionExpired);
+  const showAccountRows    = useDataStore((state) => state.showAccountRows);
 
   const isLoading = pendingRequests > 0;
   const navigate  = useNavigate();
@@ -231,6 +237,7 @@ export default function Dashboard() {
       await fetchUserData(user, port);
       await fetchCustomGrouping(port);
       await fetchCustomColumns(port);
+      await fetchShowAccountRows(port);
       await fetchCommonSubscription();
 
       await Promise.all([
@@ -344,6 +351,8 @@ export default function Dashboard() {
         isSocketConnected={isSocketConnected}
         onOpenColumns={() => posGridRef.current?.openColumns()}
         onOpenGrouping={() => posGridRef.current?.openGrouping()}
+        showAccountRows={showAccountRows}
+        onToggleAccountRows={() => setShowAccountRows(!showAccountRows, port)}
       />
       <Box sx={{ flex: 1, overflow: 'hidden', px: 2, pb: 2 }}>
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>

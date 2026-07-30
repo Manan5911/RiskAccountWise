@@ -619,6 +619,28 @@ export const useDataStore = create(devtools((set, get) => ({
     }
   },
 
+  fetchShowAccountRows: async (port) => {
+    try {
+      const loginUser = sessionStorage.getItem('UserName');
+      const data = await getUserProfile(loginUser, port);
+      const entry = data?.find(v => v.ProfileName === 'ShowAccountRows');
+      if (entry) {
+        set({ showAccountRows: JSON.parse(entry.ProfileValue) });
+      } // else keep the default (true)
+    } catch (err) {
+      console.error('Failed to fetch showAccountRows:', err);
+    }
+  },
+
+  setShowAccountRows: async (value, port) => {
+    try {
+      await editUserProfile(port, 'ShowAccountRows', JSON.stringify(value));
+      set({ showAccountRows: value });
+    } catch (err) {
+      console.error('Failed to save showAccountRows:', err);
+    }
+  },
+
   fetchCustomColumns: async (port) => {
     try {
       const loginUser = sessionStorage.getItem('UserName');
@@ -1197,6 +1219,8 @@ export const useDataStore = create(devtools((set, get) => ({
       sessionExpired: false,
       hasCustomerGrouping: false,
       customGrouping: [],
+      showAccountRows: true,
+      showAccountRows: true, // default: current behavior (account rows visible)
       customColumns: null,
     });
   },

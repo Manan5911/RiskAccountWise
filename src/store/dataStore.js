@@ -115,9 +115,10 @@ export const useDataStore = create(devtools((set, get) => ({
   userMargin: [],       // [{ Name, Amount, UpdatedBy, UpdateTime }]
   referenceRate: 1,     // SGX/IFSC → INR conversion rate
   hasCustomerGrouping: false,
-  customGrouping: [],
+  groupingConfig: { mode: null, groups: [] }, // mode: null | 'account' | 'qtUser' | 'ctcl'
   customColumns: null,
   subscriptions: [],
+  selectedSubscriptions: [], // "SecurityId_SecurityExchange" composite keys
 
   connectSocket: () => {
     const existingSocket = get().socket;
@@ -290,6 +291,29 @@ export const useDataStore = create(devtools((set, get) => ({
       set({ error: err.message });
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
+    }
+  },
+
+  fetchSelectedSubscriptions: async (port) => {
+    try {
+      const loginUser = sessionStorage.getItem('UserName');
+      const data = await getUserProfile(loginUser, port);
+      const entry = data?.find(v => v.ProfileName === 'SelectedSubscriptions');
+      if (entry) {
+        const parsed = JSON.parse(entry.ProfileValue || '[]');
+        if (Array.isArray(parsed)) set({ selectedSubscriptions: parsed });
+      } // else keep the default ([])
+    } catch (err) {
+      console.error('Failed to fetch selected subscriptions:', err);
+    }
+  },
+
+  saveSelectedSubscriptions: async (ids, port) => {
+    try {
+      await editUserProfile(port, 'SelectedSubscriptions', JSON.stringify(ids));
+      set({ selectedSubscriptions: ids });
+    } catch (err) {
+      console.error('Failed to save selected subscriptions:', err);
     }
   },
 
@@ -595,27 +619,28 @@ export const useDataStore = create(devtools((set, get) => ({
     }
   },
 
-  fetchCustomGrouping: async (port) => {
+  fetchGroupingConfig: async (port) => {
     try {
       const loginUser = sessionStorage.getItem('UserName');
       const data = await getUserProfile(loginUser, port);
-      const entry = data?.find(v => v.ProfileName === 'CustomGrouping');
-      // console.log('fetchCustomGrouping entry:', entry);
+      const entry = data?.find(v => v.ProfileName === 'GroupingConfig');
       if (entry) {
-        const parsed = JSON.parse(entry.ProfileValue || '[]');
-        set({ customGrouping: parsed });
-      }
+        const parsed = JSON.parse(entry.ProfileValue || 'null');
+        if (parsed && parsed.mode && Array.isArray(parsed.groups)) {
+          set({ groupingConfig: parsed });
+        }
+      } // else keep the default ({ mode: null, groups: [] })
     } catch (err) {
-      console.error('Failed to fetch custom grouping:', err);
+      console.error('Failed to fetch grouping config:', err);
     }
   },
 
-  saveCustomGrouping: async (groups, port) => {
+  saveGroupingConfig: async (config, port) => {
     try {
-      await editUserProfile(port, 'CustomGrouping', JSON.stringify(groups));
-      set({ customGrouping: groups });
+      await editUserProfile(port, 'GroupingConfig', JSON.stringify(config));
+      set({ groupingConfig: config });
     } catch (err) {
-      console.error('Failed to save custom grouping:', err);
+      console.error('Failed to save grouping config:', err);
     }
   },
 
@@ -975,6 +1000,7 @@ export const useDataStore = create(devtools((set, get) => ({
       return {
       account,
       qtUsers: new Set(owners || []),
+      ctcls: new Set(), // populated from trade.CTCLId as trades are processed below
       Category1: match ? (match.Category1 || 'Unassigned') : 'Unassigned',
       Category2: match ? (match.Category2 || 'Unassigned') : 'Unassigned',
       tradesMap: {},
@@ -1052,6 +1078,7 @@ export const useDataStore = create(devtools((set, get) => ({
         positions[account] = {
           ...existing[account],
           qtUsers: new Set(existing[account].qtUsers),
+          ctcls: new Set(existing[account].ctcls),
           tradesMap: { ...existing[account].tradesMap },
         };
       }
@@ -1095,6 +1122,7 @@ export const useDataStore = create(devtools((set, get) => ({
       } else {
         owners.forEach((u) => positions[account].qtUsers.add(u));
       }
+      if (trade.CTCLId) positions[account].ctcls.add(trade.CTCLId);
 
       if (positions[account].Category1 === 'Unassigned') {
         const match = getAccountCustomer(account);
@@ -1218,9 +1246,9 @@ export const useDataStore = create(devtools((set, get) => ({
       hasConnectedOnce: false,
       sessionExpired: false,
       hasCustomerGrouping: false,
-      customGrouping: [],
+      groupingConfig: { mode: null, groups: [] },
       showAccountRows: true,
-      showAccountRows: true, // default: current behavior (account rows visible)
+      selectedSubscriptions: [],
       customColumns: null,
     });
   },

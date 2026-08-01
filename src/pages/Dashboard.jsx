@@ -6,6 +6,7 @@ import { useDataStore } from '../store/dataStore';
 import { useNavigate } from 'react-router-dom';
 import { Typography, Box, Button, Skeleton } from '@mui/material';
 import PositionsGrid from '../components/PositionsGrid';
+import SubscriptionsModal from '../components/SubscriptionsModal';
 
 const REFRESH_TRADES_AFTER_MS = 30  * 1000;
 const REFRESH_FULL_AFTER_MS   = 5   * 60 * 1000;
@@ -55,7 +56,7 @@ const SocketStatus = ({ isConnected }) => (
 );
 
 // ─── User menu dropdown ───────────────────────────────────────────────────────
-const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows }) => {
+const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions }) => {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef(null);
 
@@ -69,6 +70,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
     { icon: '▦', label: 'Columns',  action: () => { onOpenColumns();  setOpen(false); } },
     { icon: '⊜', label: 'Grouping', action: () => { onOpenGrouping(); setOpen(false); } },
     { icon: showAccountRows ? '☑' : '☐', label: 'Show account rows', action: () => { onToggleAccountRows(); setOpen(false); } },
+    { icon: '◉', label: 'Live Subscriptions', action: () => { onOpenSubscriptions(); setOpen(false); } },
     { divider: true },
     { icon: '⎋', label: 'Logout',   action: () => { onLogout();       setOpen(false); }, danger: true },
 ];  
@@ -134,7 +136,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
 };
 
 // ─── Header bar ───────────────────────────────────────────────────────────────
-const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows }) => (
+const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions }) => (
   <Box sx={{
     px: 2, py: 1,
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -153,6 +155,7 @@ const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGro
       onOpenGrouping={onOpenGrouping}
       showAccountRows={showAccountRows}
       onToggleAccountRows={onToggleAccountRows}
+      onOpenSubscriptions={onOpenSubscriptions}
     />
   </Box>
 );
@@ -201,11 +204,12 @@ export default function Dashboard() {
     fetchReferenceRate,
     fetchSpanMargin,
     fetchMarginFromUser,
-    fetchCustomGrouping,
+    fetchGroupingConfig,
     fetchCustomColumns,
     fetchCommonSubscription,
     fetchShowAccountRows,
     setShowAccountRows,
+    fetchSelectedSubscriptions,
   } = useDataStore();
 
   const pendingRequests    = useDataStore((state) => state.pendingRequests);
@@ -235,9 +239,10 @@ export default function Dashboard() {
       // Run fetchUserData first so CustomerGrouping profile can be loaded
       // before getCustomerAccountMappings potentially overwrites CustomerAccounts
       await fetchUserData(user, port);
-      await fetchCustomGrouping(port);
+      await fetchGroupingConfig(port);
       await fetchCustomColumns(port);
       await fetchShowAccountRows(port);
+      await fetchSelectedSubscriptions(port);
       await fetchCommonSubscription();
 
       await Promise.all([
@@ -329,6 +334,7 @@ export default function Dashboard() {
   }, [user, token]);
 
   const posGridRef = React.useRef(null);
+  const [subscriptionsOpen, setSubscriptionsOpen] = React.useState(false);
 
   const handleLogout = () => {
     disconnectSocket();
@@ -353,7 +359,11 @@ export default function Dashboard() {
         onOpenGrouping={() => posGridRef.current?.openGrouping()}
         showAccountRows={showAccountRows}
         onToggleAccountRows={() => setShowAccountRows(!showAccountRows, port)}
+        onOpenSubscriptions={() => setSubscriptionsOpen(true)}
       />
+      {subscriptionsOpen && (
+        <SubscriptionsModal onClose={() => setSubscriptionsOpen(false)} />
+      )}
       <Box sx={{ flex: 1, overflow: 'hidden', px: 2, pb: 2 }}>
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
           {Object.keys(positions).length > 0 && (

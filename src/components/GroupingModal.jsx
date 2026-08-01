@@ -4,10 +4,8 @@ import { useState, useMemo } from 'react';
 const C = {
   navy: '#1a2340',
   navyLight: '#1f2a4a',
-  blue1Bg: '#c3d4f5',   // cat1 group row bg (same as grid)
+  blue1Bg: '#c3d4f5',
   blue1Text: '#0c0f17',
-  blue2Bg: '#dbe6f9',   // cat2 group row bg (same as grid)
-  blue2Text: '#16265c',
   white: '#ffffff',
   surface: '#f8fafc',
   border: '#e5e7eb',
@@ -21,6 +19,15 @@ const C = {
   dropActive: '#eef2fb',
   dropBorder: '#1a2340',
   danger: '#e0291b',
+  dangerBg: '#fff5f5',
+};
+
+const MODE_LABELS = { account: 'Account', qtUser: 'Trader', ctcl: 'Client Code' };
+
+const MODE_DESCRIPTIONS = {
+  account: 'Assign trade accounts to custom groups. Each account\u2019s Trader(s) and, if enabled, account row will nest underneath automatically.',
+  qtUser:  'Assign Traders to custom groups. Each user\u2019s accounts will nest underneath (if account rows are enabled). Margin shows at this level.',
+  ctcl:    'Assign Client Codes to custom groups. Traders and accounts under each Client Code nest underneath automatically.',
 };
 
 const overlay = {
@@ -60,11 +67,11 @@ const reorderBtn = (disabled) => ({
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
 });
 
-// User chip (unassigned panel)
-const UserChip = ({ user, onDragStart, onDragEnd }) => (
+// Member chip (unassigned panel)
+const MemberChip = ({ member, onDragStart, onDragEnd }) => (
   <div
     draggable
-    onDragStart={() => onDragStart(user)}
+    onDragStart={() => onDragStart(member)}
     onDragEnd={onDragEnd}
     style={{
       padding: '5px 11px', borderRadius: '4px', fontSize: '15px',
@@ -74,15 +81,15 @@ const UserChip = ({ user, onDragStart, onDragEnd }) => (
       letterSpacing: '0.1px',
     }}
   >
-    {user}
+    {member}
   </div>
 );
 
-// Assigned chip (inside drop zone)
-const AssignedChip = ({ user, onRemove, onDragStart, onDragEnd }) => (
+// Assigned chip (inside a group's drop zone)
+const AssignedChip = ({ member, onRemove, onDragStart, onDragEnd }) => (
   <span
     draggable
-    onDragStart={() => onDragStart(user)}
+    onDragStart={() => onDragStart(member)}
     onDragEnd={onDragEnd}
     style={{
       display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -91,22 +98,22 @@ const AssignedChip = ({ user, onRemove, onDragStart, onDragEnd }) => (
       cursor: 'grab', userSelect: 'none',
     }}
   >
-    {user}
+    {member}
     <span
-      onClick={(e) => { e.stopPropagation(); onRemove(user); }}
+      onClick={(e) => { e.stopPropagation(); onRemove(member); }}
       style={{ cursor: 'pointer', opacity: 0.65, fontSize: '14px', lineHeight: 1 }}
     >×</span>
   </span>
 );
 
-// Drop zone
-const DropZone = ({ users, zoneKey, dragOver, onDragOver, onDragLeave, onDrop, onRemove, onDragStart, onDragEnd }) => {
-  const isOver = dragOver === zoneKey;
+// Drop zone — one per group (single level, no sub-groups anymore)
+const DropZone = ({ members, groupId, dragOver, onDragOver, onDragLeave, onDrop, onRemove, onDragStart, onDragEnd, modeLabel }) => {
+  const isOver = dragOver === groupId;
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); onDragOver(zoneKey); }}
+      onDragOver={(e) => { e.preventDefault(); onDragOver(groupId); }}
       onDragLeave={onDragLeave}
-      onDrop={() => onDrop(zoneKey)}
+      onDrop={() => onDrop(groupId)}
       style={{
         minHeight: '36px', border: `2px dashed ${isOver ? C.dropBorder : C.borderMid}`,
         borderRadius: '5px', padding: '4px 6px',
@@ -116,14 +123,14 @@ const DropZone = ({ users, zoneKey, dragOver, onDragOver, onDragLeave, onDrop, o
         flex: 1,
       }}
     >
-      {users.length === 0 && (
+      {members.length === 0 && (
         <span style={{ fontSize: '14px', color: C.mutedLight, padding: '2px 4px' }}>
-          Drop users here
+          Drop {modeLabel.toLowerCase()}s here
         </span>
       )}
-      {users.map(u => (
+      {members.map(m => (
         <AssignedChip
-          key={u} user={u}
+          key={m} member={m}
           onRemove={onRemove}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
@@ -133,43 +140,104 @@ const DropZone = ({ users, zoneKey, dragOver, onDragOver, onDragLeave, onDrop, o
   );
 };
 
-// ─── Main component ───────────────────────────────────────────────────────────
-// Group structure:
-//   { id, name, directUsers: [username,...], subGroups: [{ id, name, users: [...] }] }
-// directUsers = users sitting at Level 1 (no sub-group)
-// subGroups   = Level 2 containers
+// ─── Mode picker screen — shown when no grouping mode is active yet ──────────
+const ModePicker = ({ onPick, onClose }) => (
+  <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+    <div style={{ ...modal, width: '620px' }}>
+      <div style={header}>
+        <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff', letterSpacing: '0.2px' }}>
+          Grouping — choose a type
+        </span>
+        <button onClick={onClose} style={{
+          fontSize: '22px', cursor: 'pointer', color: '#fff',
+          background: 'none', border: 'none', lineHeight: 1, padding: '0 2px', opacity: 0.8,
+        }}>×</button>
+      </div>
+      <div style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {['account', 'qtUser', 'ctcl'].map((m) => (
+          <div
+            key={m}
+            onClick={() => onPick(m)}
+            style={{
+              border: `1px solid ${C.borderMid}`, borderRadius: '8px',
+              padding: '14px 16px', cursor: 'pointer',
+              transition: 'border-color 0.12s, background 0.12s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = C.navy; e.currentTarget.style.background = C.surface; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = C.borderMid; e.currentTarget.style.background = 'transparent'; }}
+          >
+            <div style={{ fontSize: '14px', fontWeight: 700, color: C.text, marginBottom: '4px' }}>
+              Group by {MODE_LABELS[m]}
+            </div>
+            <div style={{ fontSize: '13px', color: C.muted, lineHeight: 1.4 }}>
+              {MODE_DESCRIPTIONS[m]}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={footer}>
+        <button onClick={onClose} style={{
+          fontSize: '13px', fontWeight: 600, color: C.muted,
+          background: '#f3f4f6', border: `1px solid ${C.borderMid}`,
+          borderRadius: '6px', padding: '8px 20px', cursor: 'pointer',
+        }}>Cancel</button>
+      </div>
+    </div>
+  </div>
+);
 
-export default function GroupingModal({ allUsers, initialGroups, onSave, onClose }) {
-  const [groups, setGroups] = useState(() => {
-    if (initialGroups && initialGroups.length > 0) return initialGroups;
-    return [];
-  });
+// ─── Main component ───────────────────────────────────────────────────────────
+// Config structure now:
+//   { mode: 'account' | 'qtUser' | 'ctcl', groups: [{ id, name, members: [...] }] }
+// Anything not assigned to a group falls into an automatic "Ungrouped" bucket
+// at render time in the grid — this modal doesn't need to represent that bucket
+// itself, it only manages explicit groups.
+//
+// memberOptions = { account: [...ids], qtUser: [...names], ctcl: [...ids] }
+// — the full candidate list for whichever mode is active, supplied by the grid.
+
+export default function GroupingModal({ initialConfig, memberOptions, onSave, onClose }) {
+  const hasExistingMode = !!(initialConfig && initialConfig.mode);
+
+  const [mode, setMode] = useState(hasExistingMode ? initialConfig.mode : null);
+  const [groups, setGroups] = useState(() =>
+    hasExistingMode && Array.isArray(initialConfig.groups) ? initialConfig.groups : []
+  );
   const [newGroupName, setNewGroupName] = useState('');
   const [addingGroup, setAddingGroup] = useState(false);
-  const [newSubGroupName, setNewSubGroupName] = useState({});  // gIdx → name
-  const [addingSubGroup, setAddingSubGroup] = useState({});     // gIdx → bool
-  const [dragUser, setDragUser] = useState(null);
+  const [dragMember, setDragMember] = useState(null);
   const [dragOver, setDragOver] = useState(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
-  const assignedUsers = useMemo(() => {
+  const allMembers = mode ? (memberOptions[mode] || []) : [];
+  const modeLabel = mode ? MODE_LABELS[mode] : '';
+
+  const assignedMembers = useMemo(() => {
     const s = new Set();
-    groups.forEach(g => {
-      (g.directUsers || []).forEach(u => s.add(u));
-      (g.subGroups || []).forEach(sg => (sg.users || []).forEach(u => s.add(u)));
-    });
+    groups.forEach(g => (g.members || []).forEach(m => s.add(m)));
     return s;
   }, [groups]);
 
-  const unassignedUsers = useMemo(() =>
-    allUsers.filter(u => !assignedUsers.has(u)).sort(),
-    [allUsers, assignedUsers]
+  const unassignedMembers = useMemo(() =>
+    allMembers.filter(m => !assignedMembers.has(m)).sort(),
+    [allMembers, assignedMembers]
   );
+
+  // ── Mode selection (only reachable when there's no active mode) ────────────
+  if (!mode) {
+    return (
+      <ModePicker
+        onPick={(m) => setMode(m)}
+        onClose={onClose}
+      />
+    );
+  }
 
   // ── Group management ────────────────────────────────────────────────────────
   const confirmAddGroup = () => {
     const name = newGroupName.trim();
     if (!name) return;
-    setGroups(prev => [...prev, { id: Date.now(), name, directUsers: [], subGroups: [] }]);
+    setGroups(prev => [...prev, { id: Date.now(), name, members: [] }]);
     setNewGroupName('');
     setAddingGroup(false);
   };
@@ -186,96 +254,52 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
     });
   };
 
-  const moveSubGroup = (gIdx, sIdx, dir) => {
-    setGroups(prev => prev.map((g, i) => {
-      if (i !== gIdx) return g;
-      const next = [...g.subGroups];
-      const targetIdx = sIdx + dir;
-      if (targetIdx < 0 || targetIdx >= next.length) return g;
-      [next[sIdx], next[targetIdx]] = [next[targetIdx], next[sIdx]];
-      return { ...g, subGroups: next };
-    }));
-  };
-
   const updateGroupName = (gIdx, name) =>
     setGroups(prev => prev.map((g, i) => i === gIdx ? { ...g, name } : g));
 
-  // ── Sub-group management ────────────────────────────────────────────────────
-  const confirmAddSubGroup = (gIdx) => {
-    const name = (newSubGroupName[gIdx] || '').trim();
-    if (!name) return;
-    setGroups(prev => prev.map((g, i) => i === gIdx
-      ? { ...g, subGroups: [...(g.subGroups || []), { id: Date.now(), name, users: [] }] }
-      : g
-    ));
-    setNewSubGroupName(p => ({ ...p, [gIdx]: '' }));
-    setAddingSubGroup(p => ({ ...p, [gIdx]: false }));
-  };
-
-  const deleteSubGroup = (gIdx, sIdx) =>
-    setGroups(prev => prev.map((g, i) => i === gIdx
-      ? { ...g, subGroups: g.subGroups.filter((_, j) => j !== sIdx) }
-      : g
-    ));
-
-  const updateSubGroupName = (gIdx, sIdx, name) =>
-    setGroups(prev => prev.map((g, i) => i === gIdx
-      ? { ...g, subGroups: g.subGroups.map((sg, j) => j === sIdx ? { ...sg, name } : sg) }
-      : g
-    ));
-
-  // ── Remove user from any slot ───────────────────────────────────────────────
-  const removeUser = (user) => {
+  // ── Remove member from any group ────────────────────────────────────────────
+  const removeMember = (member) => {
     setGroups(prev => prev.map(g => ({
       ...g,
-      directUsers: (g.directUsers || []).filter(u => u !== user),
-      subGroups: (g.subGroups || []).map(sg => ({
-        ...sg, users: sg.users.filter(u => u !== user),
-      })),
+      members: (g.members || []).filter(m => m !== member),
     })));
   };
 
   // ── Drag & drop ─────────────────────────────────────────────────────────────
-  const onDragStart = (user) => setDragUser(user);
-  const onDragEnd = () => { setDragUser(null); setDragOver(null); };
+  const onDragStart = (member) => setDragMember(member);
+  const onDragEnd = () => { setDragMember(null); setDragOver(null); };
 
-  const onDrop = (zoneKey) => {
-    if (!dragUser) return;
-    // Remove from everywhere first
-    const cleaned = groups.map(g => ({
-      ...g,
-      directUsers: (g.directUsers || []).filter(u => u !== dragUser),
-      subGroups: (g.subGroups || []).map(sg => ({
-        ...sg, users: sg.users.filter(u => u !== dragUser),
-      })),
+  const onDrop = (groupId) => {
+    if (!dragMember) return;
+    setGroups(prev => prev.map(g => {
+      const withoutMember = (g.members || []).filter(m => m !== dragMember);
+      return g.id === groupId
+        ? { ...g, members: [...withoutMember, dragMember] }
+        : { ...g, members: withoutMember };
     }));
-
-    // zoneKey format: 'direct__{gIdx}' or 'sub__{gIdx}__{sIdx}'
-    if (zoneKey.startsWith('direct__')) {
-      const gIdx = parseInt(zoneKey.split('__')[1]);
-      cleaned[gIdx].directUsers = [...(cleaned[gIdx].directUsers || []), dragUser];
-    } else if (zoneKey.startsWith('sub__')) {
-      const [, gIdxStr, sIdxStr] = zoneKey.split('__');
-      const gIdx = parseInt(gIdxStr), sIdx = parseInt(sIdxStr);
-      cleaned[gIdx].subGroups[sIdx].users = [...cleaned[gIdx].subGroups[sIdx].users, dragUser];
-    }
-    setGroups(cleaned);
-    setDragUser(null);
+    setDragMember(null);
     setDragOver(null);
+  };
+
+  // ── Remove grouping entirely — unlocks the other two modes ─────────────────
+  // This saves and closes immediately, rather than just switching local
+  // state — the mode-picker screen (shown once mode is null) has no Save
+  // button, so waiting for one would mean the removal never actually reaches
+  // the store.
+  const confirmRemoveGrouping = () => {
+    onSave({ mode: null, groups: [] });
+    onClose();
   };
 
   const handleSave = () => {
     const cleaned = groups
       .filter(g => g.name.trim())
       .map(g => ({
-        ...g,
+        id: g.id,
         name: g.name.trim(),
-        directUsers: g.directUsers || [],
-        subGroups: (g.subGroups || [])
-          .filter(sg => sg.name.trim() || sg.users.length > 0)
-          .map(sg => ({ ...sg, name: sg.name.trim() })),
+        members: g.members || [],
       }));
-    onSave(cleaned);
+    onSave({ mode, groups: cleaned });
   };
 
   return (
@@ -284,9 +308,18 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
 
         {/* Header */}
         <div style={header}>
-          <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff', letterSpacing: '0.2px' }}>
-            Grouping
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff', letterSpacing: '0.2px' }}>
+              Grouping
+            </span>
+            <span style={{
+              fontSize: '11px', fontWeight: 700, color: C.navy,
+              background: C.blue1Bg, borderRadius: '999px',
+              padding: '3px 10px', letterSpacing: '0.3px',
+            }}>
+              By {modeLabel}
+            </span>
+          </div>
           <button onClick={onClose} style={{
             fontSize: '22px', cursor: 'pointer', color: '#fff',
             background: 'none', border: 'none', lineHeight: 1, padding: '0 2px', opacity: 0.8,
@@ -296,7 +329,7 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
         {/* Body */}
         <div style={body}>
 
-          {/* Left — unassigned users */}
+          {/* Left — unassigned members */}
           <div style={{
             width: '200px', flexShrink: 0, borderRight: `1px solid ${C.border}`,
             display: 'flex', flexDirection: 'column', background: C.surface,
@@ -309,14 +342,17 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
               Unassigned
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: '10px 10px' }}>
-              {unassignedUsers.length === 0
+              {unassignedMembers.length === 0
                 ? <div style={{ fontSize: '13px', color: C.mutedLight, padding: '4px 2px' }}>
-                    All users assigned
+                    All {modeLabel.toLowerCase()}s assigned
                   </div>
-                : unassignedUsers.map(u => (
-                  <UserChip key={u} user={u} onDragStart={onDragStart} onDragEnd={onDragEnd} />
+                : unassignedMembers.map(m => (
+                  <MemberChip key={m} member={m} onDragStart={onDragStart} onDragEnd={onDragEnd} />
                 ))
               }
+            </div>
+            <div style={{ padding: '10px 12px', borderTop: `1px solid ${C.border}`, fontSize: '11px', color: C.mutedLight, lineHeight: 1.4 }}>
+              Anything left unassigned shows under an automatic "Ungrouped" bucket in the grid.
             </div>
           </div>
 
@@ -335,7 +371,7 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
                   onClick={() => setAddingGroup(true)}
                   style={{
                     fontSize: '13px', fontWeight: 600, color: C.navy,
-                    background: C.blue2Bg, border: `1px solid #b3c8ee`,
+                    background: C.blue1Bg, border: `1px solid #b0c4e8`,
                     borderRadius: '4px', padding: '4px 12px', cursor: 'pointer',
                   }}
                 >
@@ -379,7 +415,7 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
 
               {groups.length === 0 && !addingGroup && (
                 <div style={{ fontSize: '13px', color: C.muted, padding: '32px 0', textAlign: 'center' }}>
-                  No groups defined — all users will show without grouping.<br />
+                  No groups defined yet — all {modeLabel.toLowerCase()}s will show under "Ungrouped".<br />
                   <span style={{ fontSize: '12px', color: C.mutedLight }}>Click "Add Group" to start.</span>
                 </div>
               )}
@@ -389,8 +425,6 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
                   border: `1px solid ${C.borderMid}`, borderRadius: '7px',
                   marginBottom: '12px', overflow: 'hidden',
                 }}>
-
-                  {/* ── Level 1 group header (cat1 style) ── */}
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: '8px',
                     padding: '9px 12px', background: C.blue1Bg,
@@ -413,106 +447,19 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
                     }}>×</button>
                   </div>
 
-                  <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-
-                    {/* Direct users drop zone (Level 1, no sub-group) */}
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                      <span style={{
-                        fontSize: '12px', fontWeight: 600, color: C.blue1Text,
-                        textTransform: 'uppercase', letterSpacing: '0.4px',
-                        paddingTop: '10px', flexShrink: 0, minWidth: '80px',
-                      }}>
-                        Direct
-                      </span>
-                      <DropZone
-                        users={g.directUsers || []}
-                        zoneKey={`direct__${gIdx}`}
-                        dragOver={dragOver}
-                        onDragOver={setDragOver}
-                        onDragLeave={() => setDragOver(null)}
-                        onDrop={onDrop}
-                        onRemove={removeUser}
-                        onDragStart={onDragStart}
-                        onDragEnd={onDragEnd}
-                      />
-                    </div>
-
-                    {/* ── Level 2 sub-groups (cat2 style) ── */}
-                    {(g.subGroups || []).map((sg, sIdx) => (
-                      <div key={sg.id} style={{
-                        background: C.blue2Bg, borderRadius: '5px',
-                        border: `1px solid #b3c8ee`, padding: '8px 10px',
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                          <span style={{ fontSize: '14px', color: C.blue2Text, fontWeight: 600, flexShrink: 0 }}>▶</span>
-                          <input
-                            value={sg.name}
-                            onChange={e => updateSubGroupName(gIdx, sIdx, e.target.value)}
-                            placeholder="Sub-group name..."
-                            style={{
-                              flex: 1, fontSize: '13px', fontWeight: 600, color: C.blue2Text,
-                              border: 'none', background: 'transparent', outline: 'none', padding: '1px 0',
-                            }}
-                          />
-                          <button onClick={() => moveSubGroup(gIdx, sIdx, -1)} disabled={sIdx === 0} style={reorderBtn(sIdx === 0)} title="Move up">▲</button>
-                          <button onClick={() => moveSubGroup(gIdx, sIdx, 1)} disabled={sIdx === g.subGroups.length - 1} style={reorderBtn(sIdx === g.subGroups.length - 1)} title="Move down">▼</button>
-                          <button onClick={() => deleteSubGroup(gIdx, sIdx)} style={{
-                            fontSize: '15px', cursor: 'pointer', color: C.muted,
-                            background: 'none', border: 'none', lineHeight: 1, padding: '0 2px',
-                          }}>×</button>
-                        </div>
-                        <DropZone
-                          users={sg.users || []}
-                          zoneKey={`sub__${gIdx}__${sIdx}`}
-                          dragOver={dragOver}
-                          onDragOver={setDragOver}
-                          onDragLeave={() => setDragOver(null)}
-                          onDrop={onDrop}
-                          onRemove={removeUser}
-                          onDragStart={onDragStart}
-                          onDragEnd={onDragEnd}
-                        />
-                      </div>
-                    ))}
-
-                    {/* Add sub-group */}
-                    {addingSubGroup[gIdx] ? (
-                      <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
-                        <input
-                          autoFocus
-                          value={newSubGroupName[gIdx] || ''}
-                          onChange={e => setNewSubGroupName(p => ({ ...p, [gIdx]: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter') confirmAddSubGroup(gIdx); if (e.key === 'Escape') setAddingSubGroup(p => ({ ...p, [gIdx]: false })); }}
-                          placeholder="Sub-group name..."
-                          style={{
-                            flex: 1, fontSize: '14px', fontWeight: 500,
-                            border: `1px solid ${C.borderMid}`, borderRadius: '4px',
-                            padding: '4px 8px', outline: 'none', background: '#fff',
-                          }}
-                        />
-                        <button onClick={() => confirmAddSubGroup(gIdx)} style={{
-                          fontSize: '13px', fontWeight: 700, color: '#fff', background: C.navy,
-                          border: 'none', borderRadius: '4px', padding: '4px 10px', cursor: 'pointer',
-                        }}>Add</button>
-                        <button onClick={() => setAddingSubGroup(p => ({ ...p, [gIdx]: false }))} style={{
-                          fontSize: '13px', color: C.muted, background: '#f3f4f6',
-                          border: `1px solid ${C.borderMid}`, borderRadius: '4px',
-                          padding: '4px 8px', cursor: 'pointer',
-                        }}>Cancel</button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setAddingSubGroup(p => ({ ...p, [gIdx]: true }))}
-                        style={{
-                          fontSize: '13px', fontWeight: 600, color: C.blue2Text,
-                          background: C.blue2Bg, border: `1px solid #b3c8ee`,
-                          borderRadius: '4px', padding: '4px 12px', cursor: 'pointer',
-                          alignSelf: 'flex-start', marginTop: '2px',
-                        }}
-                      >
-                        + Add Sub-group
-                      </button>
-                    )}
+                  <div style={{ padding: '10px 12px' }}>
+                    <DropZone
+                      members={g.members || []}
+                      groupId={g.id}
+                      dragOver={dragOver}
+                      onDragOver={setDragOver}
+                      onDragLeave={() => setDragOver(null)}
+                      onDrop={onDrop}
+                      onRemove={removeMember}
+                      onDragStart={onDragStart}
+                      onDragEnd={onDragEnd}
+                      modeLabel={modeLabel}
+                    />
                   </div>
                 </div>
               ))}
@@ -522,6 +469,35 @@ export default function GroupingModal({ allUsers, initialGroups, onSave, onClose
 
         {/* Footer */}
         <div style={footer}>
+          {!confirmingRemove ? (
+            <button
+              onClick={() => setConfirmingRemove(true)}
+              style={{
+                fontSize: '13px', fontWeight: 600, color: C.danger,
+                background: C.dangerBg, border: `1px solid #f3c9c5`,
+                borderRadius: '6px', padding: '8px 16px', cursor: 'pointer',
+                marginRight: 'auto',
+              }}
+            >
+              Remove Grouping
+            </button>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: 'auto' }}>
+              <span style={{ fontSize: '13px', color: C.danger, fontWeight: 600 }}>
+                Remove this grouping entirely?
+              </span>
+              <button onClick={confirmRemoveGrouping} style={{
+                fontSize: '13px', fontWeight: 700, color: '#fff', background: C.danger,
+                border: 'none', borderRadius: '4px', padding: '5px 12px', cursor: 'pointer',
+              }}>Yes, remove</button>
+              <button onClick={() => setConfirmingRemove(false)} style={{
+                fontSize: '13px', color: C.muted, background: '#f3f4f6',
+                border: `1px solid ${C.borderMid}`, borderRadius: '4px',
+                padding: '5px 10px', cursor: 'pointer',
+              }}>Cancel</button>
+            </div>
+          )}
+
           <button onClick={onClose} style={{
             fontSize: '13px', fontWeight: 600, color: C.muted,
             background: '#f3f4f6', border: `1px solid ${C.borderMid}`,

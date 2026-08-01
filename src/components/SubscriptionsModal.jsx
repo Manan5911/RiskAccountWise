@@ -1,0 +1,291 @@
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { useDataStore } from '../store/dataStore';
+
+// ─── Design tokens — matches GroupingModal's palette ──────────────────────────
+const C = {
+  navy: '#1a2340',
+  navyLight: '#1f2a4a',
+  white: '#ffffff',
+  surface: '#f8fafc',
+  border: '#e5e7eb',
+  borderMid: '#d1d5db',
+  text: '#111827',
+  muted: '#6b7280',
+  mutedLight: '#9ca3af',
+  rowHover: '#f5f7fb',
+  rowSelected: '#eef2fb',
+};
+
+const overlay = {
+  position: 'fixed', inset: 0, background: 'rgba(15,20,40,0.45)',
+  zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+};
+
+const modal = {
+  background: C.white, borderRadius: '10px', width: '760px', maxWidth: '96vw',
+  maxHeight: '86vh', display: 'flex', flexDirection: 'column',
+  boxShadow: '0 12px 48px rgba(0,0,0,0.22)',
+  fontFamily: 'system-ui, -apple-system, sans-serif',
+};
+
+const header = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  padding: '16px 22px', background: C.navy, borderRadius: '10px 10px 0 0',
+  borderBottom: `2px solid ${C.navyLight}`,
+};
+
+// Shared between the header row and every data row so columns always align.
+const COLUMN_TEMPLATE = '36px 1fr 130px 150px';
+
+const headCell = {
+  padding: '9px 10px', display: 'flex', alignItems: 'center',
+  borderRight: `1px solid ${C.border}`,
+};
+
+const bodyCell = {
+  padding: '0 10px', display: 'flex', alignItems: 'center',
+  borderRight: `1px solid ${C.border}`,
+  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+};
+
+const footer = {
+  padding: '14px 22px', borderTop: `1px solid ${C.border}`,
+  display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '10px',
+  background: C.surface,
+};
+
+// ── Exchange enum — numeric code kept as the source of truth (sent to the
+// backend later); this is purely a display lookup. ────────────────────────
+const EXCHANGE_NAMES = {
+  0: 'CME', 1: 'LME', 2: 'DGCX', 3: 'MCX', 4: 'Shanghai', 5: 'NDF',
+  7: 'NSECD', 8: 'NSEFO', 9: 'NSECM', 10: 'SGX', 11: 'BSECD', 12: 'ICE',
+  13: 'IKON', 15: 'CQG', 17: 'TT_INE', 18: 'INTEGRAL', 19: 'LP', 20: 'FXCM',
+  21: 'SGX_DC', 22: 'TFEX', 23: 'CME_Q', 24: 'LME_Q', 25: 'NYM_Q',
+  26: 'TT_DGCX', 27: 'CS', 28: 'IGE', 29: 'ICE_L', 30: 'Eurex', 31: 'OZ',
+  32: 'MCX_ETI', 33: 'NOORINDEX', 34: 'IIBX', 35: 'IFSC', 36: 'IB_CME',
+  37: 'BSEED', 38: 'TT_IFSC', 39: 'CTRADE', 40: 'SYMP', 41: 'MONEY_MARKET',
+  42: 'B3', 43: 'BSECM', 44: 'JIOGLOBEX', 45: 'ZDH', 46: 'UBS', 47: 'DROP',
+  48: 'FIX_DROP', 49: 'IIBX_FUT', 51: 'NSECOM', 52: 'JPX', 53: 'MSEI', 54: 'HKEX',
+};
+const exchangeName = (code) => EXCHANGE_NAMES[code] ?? `#${code}`;
+
+// ── .NET "/Date(1806345000000+0530)/" → readable date ──────────────────────
+const parseDotNetDate = (str) => {
+  if (!str) return null;
+  const m = /\/Date\((-?\d+)([+-]\d{4})?\)\//.exec(str);
+  if (!m) return null;
+  const d = new Date(parseInt(m[1], 10));
+  return isNaN(d.getTime()) ? null : d;
+};
+const formatExpiry = (str) => {
+  const d = parseDotNetDate(str);
+  if (!d) return '—';
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
+// A row's unique identity — SecurityId alone can collide across exchanges,
+// so every key here is the pair, not the bare id.
+const rowKey = (item) => `${item.SecurityId}_${item.SecurityExchange}`;
+
+// ── Hand-rolled virtualization — fixed row height, windowed render ─────────
+const ROW_HEIGHT = 34;
+const HEADER_HEIGHT = 34;
+const OVERSCAN = 10;
+
+export default function SubscriptionsModal({ onClose }) {
+  const subscriptions = useDataStore(s => s.subscriptions);
+  const selectedSubscriptions = useDataStore(s => s.selectedSubscriptions);
+  const saveSelectedSubscriptions = useDataStore(s => s.saveSelectedSubscriptions);
+  const port = window.location.port || '80';
+
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState(() => new Set(selectedSubscriptions || []));
+  const [scrollTop, setScrollTop] = useState(0);
+  const containerRef = useRef(null);
+  const [viewportHeight, setViewportHeight] = useState(420);
+
+  useEffect(() => {
+    if (containerRef.current) setViewportHeight(containerRef.current.clientHeight);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = Array.isArray(subscriptions)
+      ? subscriptions
+      : (subscriptions?.getAllSubscriptionsResult || []);
+    if (!q) return list;
+    return list.filter((item) => {
+      const display = (item.Symbol_DisplayName || item.Symbol || '').toLowerCase();
+      return display.includes(q);
+    });
+  }, [subscriptions, query]);
+
+  const toggleRow = (key) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const selectAllFiltered = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      filtered.forEach((item) => next.add(rowKey(item)));
+      return next;
+    });
+  };
+
+  const clearAllFiltered = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      filtered.forEach((item) => next.delete(rowKey(item)));
+      return next;
+    });
+  };
+
+  const handleSubscribe = () => {
+    saveSelectedSubscriptions([...selected], port);
+    onClose();
+  };
+
+  const itemCount = filtered.length;
+  // scrollTop measures the whole scroll container, which now includes the
+  // sticky header's own layout height — subtract it to get how far we've
+  // scrolled into the rows specifically.
+  const rowsScrollTop = Math.max(0, scrollTop - HEADER_HEIGHT);
+  const startIndex = Math.max(0, Math.floor(rowsScrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(itemCount, Math.ceil((rowsScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
+  const visibleItems = filtered.slice(startIndex, endIndex);
+
+  return (
+    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={modal}>
+
+        {/* Header */}
+        <div style={header}>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff', letterSpacing: '0.2px' }}>
+            Live Subscriptions
+          </span>
+          <button onClick={onClose} style={{
+            fontSize: '22px', cursor: 'pointer', color: '#fff',
+            background: 'none', border: 'none', lineHeight: 1, padding: '0 2px', opacity: 0.8,
+          }}>×</button>
+        </div>
+
+        {/* Search + bulk actions */}
+        <div style={{
+          padding: '12px 20px', borderBottom: `1px solid ${C.border}`,
+          display: 'flex', alignItems: 'center', gap: '10px', background: C.surface,
+        }}>
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search symbol..."
+            style={{
+              flex: 1, fontSize: '14px', color: C.text,
+              border: `1px solid ${C.borderMid}`, borderRadius: '5px',
+              padding: '7px 12px', outline: 'none', background: '#fff',
+            }}
+          />
+          <button onClick={selectAllFiltered} style={{
+            fontSize: '12px', fontWeight: 600, color: C.navy,
+            background: '#fff', border: `1px solid ${C.borderMid}`,
+            borderRadius: '5px', padding: '6px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+          }}>
+            Select {query.trim() ? 'filtered' : 'all'}
+          </button>
+          <button onClick={clearAllFiltered} style={{
+            fontSize: '12px', fontWeight: 600, color: C.muted,
+            background: '#fff', border: `1px solid ${C.borderMid}`,
+            borderRadius: '5px', padding: '6px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+          }}>
+            Clear {query.trim() ? 'filtered' : 'all'}
+          </button>
+        </div>
+
+        {/* Header + rows share ONE scroll container, so there's only ever
+            one scrollbar affecting both — alignment is guaranteed by
+            construction rather than something to compensate for. */}
+        <div
+          ref={containerRef}
+          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          style={{ flex: 1, overflowY: 'auto', position: 'relative', minHeight: '300px' }}
+        >
+          <div style={{
+            position: 'sticky', top: 0, zIndex: 2,
+            display: 'grid', gridTemplateColumns: COLUMN_TEMPLATE,
+            paddingLeft: 20, paddingRight: 20, height: HEADER_HEIGHT,
+            fontSize: '11px', fontWeight: 700, color: C.muted,
+            textTransform: 'uppercase', letterSpacing: '0.5px',
+            borderBottom: `2px solid ${C.borderMid}`, background: C.surface,
+          }}>
+            <div style={{ ...headCell, borderRight: 'none' }} />
+            <div style={headCell}>Symbol</div>
+            <div style={headCell}>Exchange</div>
+            <div style={{ ...headCell, borderRight: 'none' }}>Expiry</div>
+          </div>
+
+          {itemCount === 0 ? (
+            <div style={{ padding: '32px', textAlign: 'center', fontSize: '13px', color: C.mutedLight }}>
+              No securities match "{query}"
+            </div>
+          ) : (
+            <div style={{ height: itemCount * ROW_HEIGHT, position: 'relative' }}>
+              {visibleItems.map((item, i) => {
+                const key = rowKey(item);
+                const isSelected = selected.has(key);
+                return (
+                  <div
+                    key={key}
+                    onClick={() => toggleRow(key)}
+                    style={{
+                      position: 'absolute', top: (startIndex + i) * ROW_HEIGHT, left: 0, right: 0,
+                      height: ROW_HEIGHT, display: 'grid', gridTemplateColumns: COLUMN_TEMPLATE,
+                      paddingLeft: 20, paddingRight: 20, cursor: 'pointer', fontSize: '13px', color: C.text,
+                      background: isSelected ? C.rowSelected : 'transparent',
+                      borderBottom: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <div style={{ ...bodyCell, borderRight: 'none' }}>
+                      <input type="checkbox" checked={isSelected} readOnly style={{ cursor: 'pointer' }} />
+                    </div>
+                    <div style={{ ...bodyCell, fontWeight: 600 }}>
+                      {item.Symbol_DisplayName || item.Symbol}
+                    </div>
+                    <div style={{ ...bodyCell, color: C.muted }}>
+                      {exchangeName(item.SecurityExchange)}
+                    </div>
+                    <div style={{ ...bodyCell, color: C.muted, borderRight: 'none' }}>
+                      {formatExpiry(item.DateOfExpiry)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={footer}>
+          <span style={{ fontSize: '13px', color: C.muted, marginRight: 'auto' }}>
+            {selected.size} selected
+          </span>
+          <button onClick={onClose} style={{
+            fontSize: '13px', fontWeight: 600, color: C.muted,
+            background: '#f3f4f6', border: `1px solid ${C.borderMid}`,
+            borderRadius: '6px', padding: '8px 20px', cursor: 'pointer',
+          }}>Cancel</button>
+          <button onClick={handleSubscribe} style={{
+            fontSize: '13px', fontWeight: 700, color: '#fff',
+            background: C.navy, border: 'none',
+            borderRadius: '6px', padding: '8px 22px', cursor: 'pointer',
+          }}>
+            Subscribe ({selected.size})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

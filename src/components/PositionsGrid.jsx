@@ -477,7 +477,7 @@ const MarginCell = ({ display, styleKey, dark }) => (
 // NOTE: 'user' is always rendered first and is never hideable/reorderable —
 // it is handled separately from the configurable column list below.
 const ACCOUNT_COLUMN = {
-  id: 'account', accessorKey: 'account', header: 'Account', isPaired: false, size: 120,
+  id: 'account', accessorKey: 'account', header: 'Name', isPaired: false, size: 120,
   cell: ({ getValue }) => <span style={S.userText}>{getValue()}</span>,
 };
 
@@ -627,7 +627,7 @@ const aggToRow = (agg) => ({
 const GroupRow = ({ label, level, isExpanded, onToggle, aggRow, columns, clickableCells, activeColId, onCellClick }) => {
   const bg = level === 1 ? C.cat1Bg : C.cat2Bg;
   const textClr = level === 1 ? C.cat1Text : C.cat2Text;
-  const indent = level === 1 ? 0 : 16;
+  const indent = (level - 1) * 16; // scales to any depth; level 1→0, 2→16, 3→32, matches old behavior for 1-2
   const fontSize = level === 1 ? '14px' : '14px';
   const fontW = level === 1 ? 700 : 700;
 
@@ -840,23 +840,16 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     window.addEventListener('mouseup', onUp);
   }, [colWidths]);
 
-  // Grouping config — persisted to localStorage per viewer
-  const customGroupingFromStore   = useDataStore(s => s.customGrouping);
+  // Grouping config — persisted per viewer, 3 mutually-exclusive modes
+  const groupingConfig            = useDataStore(s => s.groupingConfig);
   const showAccountRows           = useDataStore(s => s.showAccountRows);
   const referenceRate             = useDataStore(s => s.referenceRate);
-  const saveCustomGroupingToStore = useDataStore(state => state.saveCustomGrouping);
+  const saveGroupingConfigToStore = useDataStore(state => state.saveGroupingConfig);
   const userMarginSummary         = useDataStore(s => s.userMarginSummary);
   const port = window.location.port || '80';
 
-  const [customGroups, setCustomGroups] = useState([]);
-
-  useEffect(() => {
-    setCustomGroups(customGroupingFromStore || []);
-  }, [customGroupingFromStore]);
-
-  const saveCustomGroups = (groups) => {
-    setCustomGroups(groups);
-    saveCustomGroupingToStore(groups, port);
+  const saveGroupingConfig = (config) => {
+    saveGroupingConfigToStore(config, port);
     setGroupingOpen(false);
   };
 
@@ -925,6 +918,45 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       // prev.userKey is either a plain account key (flat rows) or a
       // composite `${qtUser}:::${account}` key (grouped rows) — positions
       // in the store are keyed by plain account either way.
+      if (prev.userKey.startsWith('grpAgg|')) {
+        const qtUser = prev.userKey.split('|').pop();
+        const accountPositions = Object.values(livePositions).filter(
+          (p) => p.qtUsers && p.qtUsers.has(qtUser)
+        );
+        const mergedTradesMap = {};
+        accountPositions.forEach((pos) => {
+          Object.entries(pos.tradesMap).forEach(([k, t]) => {
+            mergedTradesMap[`${pos.account}::${k}`] = t;
+          });
+        });
+        const bucketKeys = BUCKET_KEYS[prev.colId] || [];
+        const trades = Object.values(mergedTradesMap).filter(t =>
+          bucketKeys.includes(getTradeBucketKey(t)) &&
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+        ).sort((a, b) => {
+          const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
+          if (ac !== bc) return ac - bc;
+          return (a.Symbol || '').localeCompare(b.Symbol || '');
+        });
+        return { ...prev, trades };
+      }
+
+      if (prev.userKey.startsWith('grpAcct|')) {
+        const account = prev.userKey.split('|').pop();
+        const pos = livePositions[account];
+        if (!pos) return prev;
+        const bucketKeys = BUCKET_KEYS[prev.colId] || [];
+        const trades = Object.values(pos.tradesMap).filter(t =>
+          bucketKeys.includes(getTradeBucketKey(t)) &&
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+        ).sort((a, b) => {
+          const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
+          if (ac !== bc) return ac - bc;
+          return (a.Symbol || '').localeCompare(b.Symbol || '');
+        });
+        return { ...prev, trades };
+      }
+
       if (prev.userKey.startsWith('agg:::')) {
         // Aggregate (qt-user) row — rebuild the merged view fresh, same way
         // the initial click did, so refresh reflects current live data.
@@ -968,11 +1000,6 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     });
   }, []);
 
-  // const groups = useMemo(() => buildGroups(positions, customGroups), [positions, customGroups]);
-  // Custom grouping (GroupingModal) stays parked — `groups` stays null so
-  // that code path (below) remains dead for now.
-  const groups = null;
-
   // Default view: one aggregate row per qt user, with that user's trade
   // accounts nested underneath. An account mapped to more than one qt user
   // appears — in full — under each of those users' groups.
@@ -988,6 +1015,294 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
   }, [positions]);
 
   const allUserKeys = useMemo(() => Object.keys(positions).sort(), [positions]);
+
+  // CTCL index — same pattern as userGroups, keyed by trade.CTCLId instead.
+  const ctclMap = useMemo(() => {
+    const map = {};
+    Object.values(positions).forEach((pos) => {
+      (pos.ctcls || []).forEach((c) => {
+        if (!map[c]) map[c] = [];
+        map[c].push(pos);
+      });
+    });
+    return map;
+  }, [positions]);
+
+  // Candidate lists for the GroupingModal, one per mode.
+  const memberOptionsForModal = useMemo(() => ({
+    account: allUserKeys,
+    qtUser: Object.keys(userGroups).sort(),
+    ctcl: Object.keys(ctclMap).sort(),
+  }), [allUserKeys, userGroups, ctclMap]);
+
+  // Restricts the qtUser→accounts index to a specific subset of accounts —
+  // used when a custom group (or CTCL) only covers some accounts, not all.
+  const buildQtUserBucketsFrom = (accountList) => {
+    const map = {};
+    accountList.forEach((pos) => {
+      (pos.qtUsers || []).forEach((u) => {
+        if (!map[u]) map[u] = [];
+        map[u].push(pos);
+      });
+    });
+    return map;
+  };
+
+  // Renders one qt-user row + (optionally) its account rows underneath.
+  // Shared by the default view AND all 3 custom grouping modes — this is
+  // exactly the qtUser-level block that already existed for the default
+  // view, generalized to take a keyPrefix (for unique expand/click state
+  // across different parent groups) and a groupLevel (for indent depth).
+  const renderQtUserBlock = (qtUser, accountsForUser, keyPrefix, groupLevel) => {
+    const filteredAccounts = sortPositions(filterPositions(accountsForUser, qtUser));
+    if (filteredAccounts.length === 0) return null;
+
+    const toggleKey = `${keyPrefix}|quser|${qtUser}`;
+    const isExpanded = expandedCat1.has(toggleKey);
+    const isEffExpanded = debouncedQuery.trim() ? true : isExpanded;
+
+    const aggSource = debouncedQuery.trim() ? filteredAccounts : accountsForUser;
+    const rawAgg = aggregateBuckets(aggSource);
+    const margin = userMarginSummary[qtUser] || {};
+    rawAgg.nseMargin    = margin.nseMarginAbs  || 0;
+    rawAgg.totalMargin  = margin.totalMargin   || 0;
+    rawAgg.bseMargin    = margin.bseMarginAbs  || 0;
+    rawAgg.ifscMargin   = margin.ifscMarginAbs || 0;
+    rawAgg.nseMaxMargin = margin.nseMarginMax  || 0;
+    const aggRow = aggToRow(rawAgg);
+
+    const aggKey = `grpAgg|${keyPrefix}|quser|${qtUser}`;
+    const isAggExpRow = !!expanded && expanded.userKey === aggKey;
+    const acctIndentPx = groupLevel * 16;
+
+    const handleAggCellClick = (colId) => {
+      const mergedTradesMap = {};
+      aggSource.forEach((pos) => {
+        Object.entries(pos.tradesMap).forEach(([k, t]) => {
+          mergedTradesMap[`${pos.account}::${k}`] = t;
+        });
+      });
+      const mergedPos = {
+        account: qtUser,
+        tradesMap: mergedTradesMap,
+        nseMarginAbs: margin.nseMarginAbs || 0,
+        nseMarginMax: margin.nseMarginMax || 0,
+        bseMarginAbs: margin.bseMarginAbs || 0,
+        ifscMarginAbs: margin.ifscMarginAbs || 0,
+        totalMargin: margin.totalMargin || 0,
+        premiumBuy: margin.premiumBuy || 0,
+        MarginPer: margin.MarginPer || 0,
+        spanEntries: margin.spanEntries || [],
+      };
+      handleCellClick(colId, aggKey, mergedPos);
+    };
+
+    return (
+      <Fragment key={`quser-${keyPrefix}-${qtUser}`}>
+        <GroupRow
+          label={qtUser}
+          level={groupLevel}
+          isExpanded={showAccountRows && isEffExpanded}
+          onToggle={() => toggleCat1(toggleKey)}
+          aggRow={aggRow}
+          columns={visibleColDefs}
+          clickableCells={!showAccountRows}
+          activeColId={isAggExpRow ? expanded.colId : null}
+          onCellClick={handleAggCellClick}
+        />
+
+        {!showAccountRows && isAggExpRow && (
+          expanded.type === 'margin'
+            ? <MarginExpandedRow pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
+            : <ExpandedRow trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
+        )}
+
+        {showAccountRows && isEffExpanded && filteredAccounts.map((pos) => {
+          const rowData = buildUserRowData(pos);
+          const rowKey = `grpAcct|${keyPrefix}|quser|${qtUser}|${pos.account}`;
+          const isExpRow = !!expanded && expanded.userKey === rowKey;
+          const rowBg = ROW_BG[userRowIndex % 2];
+          userRowIndex++;
+          return (
+            <Fragment key={rowKey}>
+              <tr>
+                {visibleColDefs.map((col) => {
+                  const isAcctCol = col.id === 'account';
+                  const isClickable = CLICKABLE.has(col.id);
+                  const isActive = isExpRow && expanded?.colId === col.id;
+                  const tdStyle = {
+                    ...(isAcctCol ? S.tdUserBase : S.tdBase),
+                    ...(col.isPaired ? S.tdGrouped : {}),
+                    ...(isClickable ? S.tdClickable : {}),
+                    ...rowBg,
+                    ...(isActive ? { background: '#c3d4f5' } : {}),
+                  };
+                  if (isAcctCol) {
+                    return (
+                      <td key={col.id} style={tdStyle}>
+                        <div style={{ paddingLeft: acctIndentPx }}>
+                          <span style={S.userText}>{pos.account}</span>
+                        </div>
+                      </td>
+                    );
+                  }
+                  const val = rowData[col.id];
+                  const isMarginCol = ['nseMargin', 'totalMargin', 'bseMargin', 'ifscMargin', 'nseMaxMargin'].includes(col.id);
+                  return (
+                    <td key={col.id} style={tdStyle}
+                      onClick={isClickable ? () => handleCellClick(col.id, rowKey, pos) : undefined}
+                    >
+                      {col.isPaired ? <PairCell {...val} />
+                        : isMarginCol ? <MarginCell display={val.display} styleKey={val.styleKey} />
+                        : <NumCell display={val.display} styleKey={val.styleKey} />}
+                    </td>
+                  );
+                })}
+              </tr>
+              {isExpRow && (
+                expanded.type === 'margin'
+                  ? <MarginExpandedRow pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
+                  : <ExpandedRow trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
+              )}
+            </Fragment>
+          );
+        })}
+      </Fragment>
+    );
+  };
+
+  // Builds the rendered rows for whichever custom grouping mode is active.
+  // Returns a flat array of elements (already filtered to non-empty groups).
+  const renderGroupModeBody = () => {
+    const mode = groupingConfig.mode;
+    const customGroupsList = groupingConfig.groups || [];
+
+    if (mode === 'account') {
+      const memberToGroup = {};
+      customGroupsList.forEach((g) => (g.members || []).forEach((acc) => { memberToGroup[acc] = String(g.id); }));
+
+      const bucketByKey = {};
+      customGroupsList.forEach((g) => { bucketByKey[String(g.id)] = { key: String(g.id), label: g.name, accounts: [] }; });
+      const ungrouped = { key: 'ungrouped', label: 'Ungrouped', accounts: [] };
+
+      Object.values(positions).forEach((pos) => {
+        const gKey = memberToGroup[pos.account];
+        (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).accounts.push(pos);
+      });
+
+      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.accounts.length > 0);
+
+      return allBuckets.map((b) => {
+        const qtUserBuckets = buildQtUserBucketsFrom(b.accounts);
+        const qtUserKeys = Object.keys(qtUserBuckets).sort();
+        const groupToggleKey = `grp|${b.key}`;
+        const isGroupEffExpanded = debouncedQuery.trim() ? true : expandedCat1.has(groupToggleKey);
+
+        const inner = qtUserKeys.map((u) => renderQtUserBlock(u, qtUserBuckets[u], groupToggleKey, 2)).filter(Boolean);
+        if (debouncedQuery.trim() && inner.length === 0) return null;
+
+        const groupAggRow = aggToRow(aggregateBuckets(b.accounts));
+        return (
+          <Fragment key={`grp-${b.key}`}>
+            <GroupRow label={b.label} level={1} isExpanded={isGroupEffExpanded}
+              onToggle={() => toggleCat1(groupToggleKey)} aggRow={groupAggRow} columns={visibleColDefs} />
+            {isGroupEffExpanded && inner}
+          </Fragment>
+        );
+      }).filter(Boolean);
+    }
+
+    if (mode === 'qtUser') {
+      const memberToGroup = {};
+      customGroupsList.forEach((g) => (g.members || []).forEach((u) => { memberToGroup[u] = String(g.id); }));
+
+      const bucketByKey = {};
+      customGroupsList.forEach((g) => { bucketByKey[String(g.id)] = { key: String(g.id), label: g.name, qtUsers: [] }; });
+      const ungrouped = { key: 'ungrouped', label: 'Ungrouped', qtUsers: [] };
+
+      Object.keys(userGroups).forEach((u) => {
+        const gKey = memberToGroup[u];
+        (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).qtUsers.push(u);
+      });
+
+      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.qtUsers.length > 0);
+
+      return allBuckets.map((b) => {
+        const qtUserKeys = [...b.qtUsers].sort();
+        const groupToggleKey = `grp|${b.key}`;
+        const isGroupEffExpanded = debouncedQuery.trim() ? true : expandedCat1.has(groupToggleKey);
+
+        const inner = qtUserKeys.map((u) => renderQtUserBlock(u, userGroups[u] || [], groupToggleKey, 2)).filter(Boolean);
+        if (debouncedQuery.trim() && inner.length === 0) return null;
+
+        const groupAccounts = qtUserKeys.flatMap(u => userGroups[u] || []);
+        const groupAggRow = aggToRow(aggregateBuckets(groupAccounts));
+        return (
+          <Fragment key={`grp-${b.key}`}>
+            <GroupRow label={b.label} level={1} isExpanded={isGroupEffExpanded}
+              onToggle={() => toggleCat1(groupToggleKey)} aggRow={groupAggRow} columns={visibleColDefs} />
+            {isGroupEffExpanded && inner}
+          </Fragment>
+        );
+      }).filter(Boolean);
+    }
+
+    if (mode === 'ctcl') {
+      const memberToGroup = {};
+      customGroupsList.forEach((g) => (g.members || []).forEach((c) => { memberToGroup[c] = String(g.id); }));
+
+      const bucketByKey = {};
+      customGroupsList.forEach((g) => { bucketByKey[String(g.id)] = { key: String(g.id), label: g.name, ctcls: [] }; });
+      const ungrouped = { key: 'ungrouped', label: 'Ungrouped', ctcls: [] };
+
+      Object.keys(ctclMap).forEach((c) => {
+        const gKey = memberToGroup[c];
+        (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).ctcls.push(c);
+      });
+
+      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.ctcls.length > 0);
+
+      return allBuckets.map((b) => {
+        const ctclKeys = [...b.ctcls].sort();
+        const groupToggleKey = `grp|${b.key}`;
+        const isGroupEffExpanded = debouncedQuery.trim() ? true : expandedCat1.has(groupToggleKey);
+
+        const ctclBlocks = ctclKeys.map((ctclId) => {
+          const ctclAccounts = ctclMap[ctclId] || [];
+          const qtUserBuckets = buildQtUserBucketsFrom(ctclAccounts);
+          const qtUserKeys = Object.keys(qtUserBuckets).sort();
+          const ctclToggleKey = `${groupToggleKey}|ctcl|${ctclId}`;
+          const isCtclEffExpanded = debouncedQuery.trim() ? true : expandedCat1.has(ctclToggleKey);
+
+          const inner = qtUserKeys.map((u) => renderQtUserBlock(u, qtUserBuckets[u], ctclToggleKey, 3)).filter(Boolean);
+          if (debouncedQuery.trim() && inner.length === 0) return null;
+
+          const ctclAggRow = aggToRow(aggregateBuckets(ctclAccounts));
+          return (
+            <Fragment key={`ctcl-${ctclToggleKey}`}>
+              <GroupRow label={ctclId} level={2} isExpanded={isCtclEffExpanded}
+                onToggle={() => toggleCat1(ctclToggleKey)} aggRow={ctclAggRow} columns={visibleColDefs} />
+              {isCtclEffExpanded && inner}
+            </Fragment>
+          );
+        }).filter(Boolean);
+
+        if (debouncedQuery.trim() && ctclBlocks.length === 0) return null;
+
+        const groupAccounts = ctclKeys.flatMap(c => ctclMap[c] || []);
+        const groupAggRow = aggToRow(aggregateBuckets(groupAccounts));
+        return (
+          <Fragment key={`grp-${b.key}`}>
+            <GroupRow label={b.label} level={1} isExpanded={isGroupEffExpanded}
+              onToggle={() => toggleCat1(groupToggleKey)} aggRow={groupAggRow} columns={visibleColDefs} />
+            {isGroupEffExpanded && ctclBlocks}
+          </Fragment>
+        );
+      }).filter(Boolean);
+    }
+
+    return [];
+  };
 
   if (!Object.keys(positions).length) {
     return <div style={S.empty}>No positions to display.</div>;
@@ -1242,7 +1557,7 @@ return (
 
         {/* ── Body ── */}
         <tbody>
-          {groups === null ? (
+          {!groupingConfig.mode ? (
             Object.keys(userGroups).sort().every(
               (u) => filterPositions(userGroups[u], u).length === 0
             ) ? (
@@ -1386,152 +1701,34 @@ return (
               );
             })
           ) : (
-            groups.map(({ cat1, cat2Groups, allUserKeys }) => {
-              const filteredCat2Groups = cat2Groups.map(({ cat2, userKeys }) => ({
-                cat2,
-                userKeys,
-                filteredUsers: sortPositions(filterPositions(userKeys.map(k => positions[k]).filter(Boolean), cat2)),
-              })).filter(sg => sg.filteredUsers.length > 0);
-
-              // Also check if cat1 name matches — show all sub-groups if so
-              const cat1Matches = debouncedQuery.trim() &&
-                cat1.toLowerCase().includes(debouncedQuery.trim().toLowerCase());
-
-              if (!cat1Matches && filteredCat2Groups.length === 0) return null;
-
-              // If cat1 matches, use all users unfiltered
-              const effectiveCat2Groups = cat1Matches
-                ? cat2Groups.map(({ cat2, userKeys }) => ({
-                    cat2,
-                    userKeys,
-                    filteredUsers: sortPositions(userKeys.map(k => positions[k]).filter(Boolean)),
-                  }))
-                : filteredCat2Groups;
-
-              const isCat1Expanded = expandedCat1.has(cat1);
-              const isCat1EffExpanded = debouncedQuery.trim() ? true : isCat1Expanded;
-              const aggUsers = debouncedQuery.trim()
-                ? effectiveCat2Groups.flatMap(sg => sg.filteredUsers)
-                : allUserKeys.map(k => positions[k]).filter(Boolean);
-              const cat1Agg    = aggregateBuckets(aggUsers);
-              const cat1AggRow = aggToRow(cat1Agg);
-
-              return (
-                <Fragment key={`cat1-${cat1}`}>
-                  <GroupRow
-                    label={cat1}
-                    level={1}
-                    isExpanded={isCat1EffExpanded}
-                    onToggle={() => toggleCat1(cat1)}
-                    aggRow={cat1AggRow}
-                    columns={visibleColDefs}
-                  />
-
-                  {isCat1EffExpanded && effectiveCat2Groups.map(({ cat2, userKeys, filteredUsers }) => {
-                    const cat2Key = `${cat1}:::${cat2}`;
-                    const isCat2Expanded = cat2 ? expandedCat2.has(cat2Key) : true;
-                    const isCat2EffExpanded = debouncedQuery.trim() ? true : isCat2Expanded;
-                    const cat2Agg    = aggregateBuckets(debouncedQuery.trim() ? filteredUsers : userKeys.map(k => positions[k]).filter(Boolean));
-                    const cat2AggRow = aggToRow(cat2Agg);
-
-                    return (
-                    <Fragment key={`cat2-${cat1}-${cat2}`}>
-                      {cat2 && (
-                        <GroupRow
-                          label={cat2}
-                          level={2}
-                          isExpanded={isCat2EffExpanded}
-                          onToggle={() => toggleCat2(cat1, cat2)}
-                          aggRow={cat2AggRow}
-                          columns={visibleColDefs}
-                        />
-                      )}
-
-                      {isCat2EffExpanded && filteredUsers.map((pos) => {
-                        const userKey = pos.user;
-                        if (!pos) return null;
-                        const rowData = buildUserRowData(pos);
-                        const isExpRow = expanded?.userKey === userKey;
-                        const rowBg = ROW_BG[userRowIndex % 2];
-                        userRowIndex++;
-
-                        return (
-                          <Fragment key={`user-${userKey}`}>
-                            <tr>
-                              {visibleColDefs.map((col) => {
-                                const isUserCol = col.id === 'user';
-                                const isClickable = CLICKABLE.has(col.id);
-                                const isActive = isExpRow && expanded?.colId === col.id;
-
-                                const tdStyle = {
-                                  ...(isUserCol ? S.tdUserBase : S.tdBase),
-                                  ...(col.isPaired ? S.tdGrouped : {}),
-                                  ...(isClickable ? S.tdClickable : {}),
-                                  ...rowBg,
-                                  ...(isActive ? { background: '#c3d4f5' } : {}),
-                                };
-
-                                if (isUserCol) {
-                                  return (
-                                    <td key={col.id} style={tdStyle}>
-                                      <div style={{ paddingLeft: cat2 ? 48 : 16 }}>
-                                        <span style={S.userText}>{pos.user}</span>
-                                      </div>
-                                    </td>
-                                  );
-                                }
-
-                                const val = rowData[col.id];
-                                const isMarginCol = ['nseMargin', 'totalMargin', 'bseMargin', 'ifscMargin', 'nseMaxMargin'].includes(col.id);
-
-                                return (
-                                  <td
-                                    key={col.id}
-                                    style={tdStyle}
-                                    onClick={isClickable ? () => handleCellClick(col.id, userKey, pos) : undefined}
-                                  >
-                                    {col.isPaired ? <PairCell {...val} />
-                                      : isMarginCol ? <MarginCell display={val.display} styleKey={val.styleKey} />
-                                      : <NumCell display={val.display} styleKey={val.styleKey} />}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-
-                            {isExpRow && (
-                              expanded.type === 'margin'
-                                ? <MarginExpandedRow key={`exp-${userKey}`} pos={expanded.pos} colId={expanded.colId} onClose={closeExpanded} totalCols={totalCols} referenceRate={referenceRate} />
-                                : <ExpandedRow key={`exp-${userKey}`} trades={expanded.trades} colId={expanded.colId} onClose={closeExpanded} onRefresh={refreshExpanded} totalCols={totalCols} />
-                            )}
-                          </Fragment>
-                        );
-                     })}
-                    </Fragment>
-                    );
-                  })}
-                </Fragment>
-              );
-            })
-          )}
-          {groups !== null && debouncedQuery.trim() && groups.every(({ cat2Groups, allUserKeys }) =>
-            cat2Groups.every(({ userKeys }) =>
-              filterPositions(userKeys.map(k => positions[k]).filter(Boolean)).length === 0
-            )
-          ) && (
-            <tr>
-              <td colSpan={totalCols} style={{
-                padding: '32px', textAlign: 'center',
-                fontSize: '13px', color: C.muted,
-                fontStyle: 'italic',
-              }}>
-                No accounts match "{debouncedQuery}"
-              </td>
-            </tr>
+            (() => {
+              const rendered = renderGroupModeBody();
+              return rendered.length === 0 ? (
+                <tr>
+                  <td colSpan={totalCols} style={{
+                    padding: '32px', textAlign: 'center',
+                    fontSize: '13px', color: C.muted, fontStyle: 'italic',
+                  }}>
+                    {debouncedQuery.trim() ? `No matches for "${debouncedQuery}"` : 'Nothing assigned yet.'}
+                  </td>
+                </tr>
+              ) : rendered;
+            })()
           )}
         </tbody>
       </table>
 
       </div>
+
+      {/* ── Grouping modal ── */}
+      {groupingOpen && (
+        <GroupingModal
+          initialConfig={groupingConfig}
+          memberOptions={memberOptionsForModal}
+          onSave={saveGroupingConfig}
+          onClose={() => setGroupingOpen(false)}
+        />
+      )}
 
       {/* ── Column settings modal ── */}
       {settingsOpen && prefsLoaded && (

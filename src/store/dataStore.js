@@ -7,6 +7,7 @@ import {
   getCurrencyPrice, getMappedUsers, getCustomerAccountMappings,
   getOpenPrices, getClosePrices, getMargins, getLTP, getAllTrades,
   getReferenceRate, getCurrentSpanMargin, getMarginFromUser, editUserProfile, getCommonSubscription,
+  subscribeForLTP,
 } from '../api/auth';
 import { environment } from '../environments/environment';
 
@@ -119,6 +120,7 @@ export const useDataStore = create(devtools((set, get) => ({
   customColumns: null,
   subscriptions: [],
   selectedSubscriptions: [], // "SecurityId_SecurityExchange" composite keys
+  headerLtps: {}, // { [key]: { ltp, dir } } — populated by live socket wiring in a later step
 
   connectSocket: () => {
     const existingSocket = get().socket;
@@ -315,6 +317,26 @@ export const useDataStore = create(devtools((set, get) => ({
     } catch (err) {
       console.error('Failed to save selected subscriptions:', err);
     }
+  },
+
+  // Tells the backend which securities to stream live LTPs for. Only called
+  // when the user actually hits Subscribe — the backend remembers across
+  // sessions, so there's no need to re-issue this on every login/reload.
+  // Uses allSettled so one failing security doesn't block the rest.
+  subscribeSecurities: async (keys) => {
+    const results = await Promise.allSettled(
+      (keys || []).map((key) => {
+        const idx = key.lastIndexOf('_');
+        const securityId = key.slice(0, idx);
+        const exch = key.slice(idx + 1);
+        return subscribeForLTP(securityId, exch);
+      })
+    );
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.error(`Failed to subscribe for LTP (${keys[i]}):`, r.reason);
+      }
+    });
   },
 
   fetchCommonSubscription: async () => {
@@ -1249,6 +1271,7 @@ export const useDataStore = create(devtools((set, get) => ({
       groupingConfig: { mode: null, groups: [] },
       showAccountRows: true,
       selectedSubscriptions: [],
+      headerLtps: {},
       customColumns: null,
     });
   },

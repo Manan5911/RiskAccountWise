@@ -294,6 +294,21 @@ export const getMarginFromUser = async () => {
   return response.data;
 };
 
+export const subscribeForLTP = async (securityId, exch) => {
+  const token = sessionStorage.getItem('x-auth-token');
+  const response = await axios.post(
+    `${environment.baseUrl}subscribeForLTP/`,
+    { securityId, exch },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `${token}`,
+      },
+    }
+  );
+  return response.data;
+};
+
 export const getCommonSubscription = async () => {
   const token = sessionStorage.getItem('x-auth-token');
   const response = await axios.get(

@@ -116,7 +116,7 @@ export default function ColumnSettingsModal({
           <div style={S.fixedRow}>
             <span style={{ width: '13px' }} />
             <span style={{ width: '14px' }} />
-            <span style={S.label}>User <em style={{ color: C.muted }}>(always visible)</em></span>
+            <span style={S.label}>Name <em style={{ color: C.muted }}>(always visible)</em></span>
           </div>
 
           {order.map((id) => {

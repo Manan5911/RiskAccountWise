@@ -42,7 +42,7 @@ export default function LoginForm() {
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
       <Paper elevation={3} sx={{ width: '100%', maxWidth: 400, p: 4 }}>
         <Typography variant="h5" align="center" sx={{ mb: 3 }}>
-          QT-BackOffice
+          Login with Credentials
         </Typography>
         <form onSubmit={handleSubmit}>
           <TextField

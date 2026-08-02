@@ -88,6 +88,7 @@ const formatExpiry = (str) => {
 const rowKey = (item) => `${item.SecurityId}_${item.SecurityExchange}`;
 
 // ── Hand-rolled virtualization — fixed row height, windowed render ─────────
+const MAX_SUBSCRIPTIONS = 10;
 const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 34;
 const OVERSCAN = 10;
@@ -96,6 +97,7 @@ export default function SubscriptionsModal({ onClose }) {
   const subscriptions = useDataStore(s => s.subscriptions);
   const selectedSubscriptions = useDataStore(s => s.selectedSubscriptions);
   const saveSelectedSubscriptions = useDataStore(s => s.saveSelectedSubscriptions);
+  const subscribeSecurities = useDataStore(s => s.subscribeSecurities);
   const port = window.location.port || '80';
 
   const [query, setQuery] = useState('');
@@ -123,8 +125,12 @@ export default function SubscriptionsModal({ onClose }) {
   const toggleRow = (key) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        if (next.size >= MAX_SUBSCRIPTIONS) return prev; // at cap — no-op
+        next.add(key);
+      }
       return next;
     });
   };
@@ -132,7 +138,10 @@ export default function SubscriptionsModal({ onClose }) {
   const selectAllFiltered = () => {
     setSelected((prev) => {
       const next = new Set(prev);
-      filtered.forEach((item) => next.add(rowKey(item)));
+      for (const item of filtered) {
+        if (next.size >= MAX_SUBSCRIPTIONS) break;
+        next.add(rowKey(item));
+      }
       return next;
     });
   };
@@ -146,7 +155,9 @@ export default function SubscriptionsModal({ onClose }) {
   };
 
   const handleSubscribe = () => {
-    saveSelectedSubscriptions([...selected], port);
+    const ids = [...selected];
+    saveSelectedSubscriptions(ids, port);
+    subscribeSecurities(ids);
     onClose();
   };
 
@@ -269,8 +280,9 @@ export default function SubscriptionsModal({ onClose }) {
 
         {/* Footer */}
         <div style={footer}>
-          <span style={{ fontSize: '13px', color: C.muted, marginRight: 'auto' }}>
-            {selected.size} selected
+          <span style={{ fontSize: '13px', color: selected.size >= MAX_SUBSCRIPTIONS ? '#e0291b' : C.muted, marginRight: 'auto' }}>
+            {selected.size} / {MAX_SUBSCRIPTIONS} selected
+            {selected.size >= MAX_SUBSCRIPTIONS ? ' — limit reached' : ''}
           </span>
           <button onClick={onClose} style={{
             fontSize: '13px', fontWeight: 600, color: C.muted,
@@ -282,7 +294,7 @@ export default function SubscriptionsModal({ onClose }) {
             background: C.navy, border: 'none',
             borderRadius: '6px', padding: '8px 22px', cursor: 'pointer',
           }}>
-            Subscribe ({selected.size})
+            Save
           </button>
         </div>
       </div>

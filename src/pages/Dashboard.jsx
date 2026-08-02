@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { Typography, Box, Button, Skeleton } from '@mui/material';
 import PositionsGrid from '../components/PositionsGrid';
 import SubscriptionsModal from '../components/SubscriptionsModal';
+import LtpTicker from '../components/LtpTicker';
 
 const REFRESH_TRADES_AFTER_MS = 30  * 1000;
 const REFRESH_FULL_AFTER_MS   = 5   * 60 * 1000;
@@ -109,7 +110,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
           position: 'absolute', top: 'calc(100% + 6px)', right: 0,
           background: '#fff', border: '1px solid #e5e7eb',
           borderRadius: '7px', boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          zIndex: 200, minWidth: '160px', overflow: 'hidden',
+          zIndex: 200, minWidth: '180px', overflow: 'hidden',
         }}>
           {items.map((item, i) => item.divider ? (
             <Box key={i} sx={{ height: '1px', background: '#f3f4f6', my: '2px' }} />
@@ -119,13 +120,13 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
               onClick={item.action}
               sx={{
                 display: 'flex', alignItems: 'center', gap: '9px',
-                padding: '9px 16px', fontSize: '13px', fontWeight: 600,
+                padding: '9px 16px', fontSize: '14px', fontWeight: 600,
                 color: item.danger ? '#e0291b' : '#111827',
                 cursor: 'pointer',
                 '&:hover': { background: item.danger ? '#fff5f5' : '#f0f4ff' },
               }}
             >
-              <span style={{ fontSize: '14px' }}>{item.icon}</span>
+              <span style={{ fontSize: '16px' }}>{item.icon}</span>
               {item.label}
             </Box>
           ))}
@@ -139,15 +140,16 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
 const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions }) => (
   <Box sx={{
     px: 2, py: 1,
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    display: 'flex', alignItems: 'center',
     borderBottom: '1px solid #dde2ec', flexShrink: 0,
   }}>
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
       <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '19px', color: '#0c0f17' }}>
         Positions
       </Typography>
       <SocketStatus isConnected={isSocketConnected} />
     </Box>
+    <LtpTicker />
     <UserMenu
       user={user}
       onLogout={onLogout}

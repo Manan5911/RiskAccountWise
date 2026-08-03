@@ -485,6 +485,10 @@ export const useDataStore = create(devtools((set, get) => ({
       if (Result) {
         const Value = JSON.parse(Result);
 
+        // TEMP DIAGNOSTIC — raw backend response, completely unprocessed
+        // by createTrade/calculatePositions. Remove once done.
+        window.__RAW_TRADES_DEBUG__ = Value;
+
         const previousDayTrades = Value.filter((i) => i.TradeType == 1);
         get().calculatePositions(previousDayTrades, 1);
 
@@ -991,11 +995,28 @@ export const useDataStore = create(devtools((set, get) => ({
         if (Symbol === 'BANKNIFTY') return 'bnfFut';
         return 'stocks';
       }
-      if (SecurityType === 'OPT') {
-        const week = getWeekKey(Symbol);
-        if (Optiontype === 'CE') return `c${week}`;
-        if (Optiontype === 'PE') return `p${week}`;
+
+      // Some trade records come through with SecurityType/Optiontype both
+      // null even though they're genuinely options (confirmed via console:
+      // SOD-carried NIFTY W2 positions with fully blank metadata, while
+      // otherwise-identical W3 trades have it populated). Rather than
+      // silently bucketing those as "stocks", fall back to reading the C/P
+      // indicator straight out of the Symbol string — that's present
+      // regardless of whether the metadata fields were populated.
+      let optiontype = Optiontype;
+      if (!optiontype && Symbol) {
+        const tokens = Symbol.trim().split(/\s+/);
+        const cpToken = tokens.find(t => t === 'C' || t === 'P');
+        if (cpToken === 'C') optiontype = 'CE';
+        else if (cpToken === 'P') optiontype = 'PE';
       }
+
+      if (SecurityType === 'OPT' || optiontype) {
+        const week = getWeekKey(Symbol);
+        if (optiontype === 'CE') return `c${week}`;
+        if (optiontype === 'PE') return `p${week}`;
+      }
+
       return 'stocks';
     };
 
@@ -1156,7 +1177,6 @@ export const useDataStore = create(devtools((set, get) => ({
 
       const ltp = ltpMap[`${trade.SecurityId}_${trade.SecurityExchange}`] ?? 0;
       const tradeKey = `${trade.Account}_${trade.SecurityExchange}_${trade.SecurityId}`;
-      const bucketKey = getBucketKey(trade);
       const existing = positions[account].tradesMap[tradeKey];
 
       let previousNetPos = 0;
@@ -1205,6 +1225,16 @@ export const useDataStore = create(devtools((set, get) => ({
       const mtm = calculateMtm(finalTrade, ltp);
       finalTrade = { ...finalTrade, Pnl: pnl, cumPnl, MTM: mtm };
 
+      // Computed from finalTrade, not the raw incoming message — finalTrade
+      // always inherits Symbol/SecurityType/Optiontype from whenever this
+      // trade was first created (via ...existing), so the bucket a trade
+      // lives in stays stable across its whole lifecycle. Computing this
+      // from the raw per-message trade instead let intraday updates with
+      // sparser metadata silently recompute a DIFFERENT bucket than the SOD
+      // snapshot did, permanently desyncing the accumulator — the previous
+      // contribution never got subtracted back out because it was
+      // subtracted from the wrong bucket.
+      const bucketKey = getBucketKey(finalTrade);
       newNetPos = finalTrade.NetPos;
       positions[account].tradesMap[tradeKey] = finalTrade;
       positions[account][bucketKey] =

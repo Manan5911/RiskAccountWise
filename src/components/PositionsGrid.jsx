@@ -171,11 +171,26 @@ const getTradeBucketKey = (trade) => {
     if (Symbol === 'BANKNIFTY') return 'bnfFut';
     return 'stocks';
   }
-  if (SecurityType === 'OPT') {
-    const week = getWeekKey(Symbol);
-    if (Optiontype === 'CE') return `c${week}`;
-    if (Optiontype === 'PE') return `p${week}`;
+
+  // Mirrors the same fallback in dataStore.js's getBucketKey — some trades
+  // arrive with SecurityType/Optiontype both null despite being genuine
+  // options, so fall back to reading the C/P indicator out of Symbol. This
+  // MUST stay identical to the dataStore.js version, or bucket totals and
+  // this breakdown panel's filtering will disagree with each other again.
+  let optiontype = Optiontype;
+  if (!optiontype && Symbol) {
+    const tokens = Symbol.trim().split(/\s+/);
+    const cpToken = tokens.find(t => t === 'C' || t === 'P');
+    if (cpToken === 'C') optiontype = 'CE';
+    else if (cpToken === 'P') optiontype = 'PE';
   }
+
+  if (SecurityType === 'OPT' || optiontype) {
+    const week = getWeekKey(Symbol);
+    if (optiontype === 'CE') return `c${week}`;
+    if (optiontype === 'PE') return `p${week}`;
+  }
+
   return 'stocks';
 };
 

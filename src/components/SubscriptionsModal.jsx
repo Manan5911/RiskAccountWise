@@ -84,11 +84,15 @@ const formatExpiry = (str) => {
 };
 
 // A row's unique identity — SecurityId alone can collide across exchanges,
-// so every key here is the pair, not the bare id.
-const rowKey = (item) => `${item.SecurityId}_${item.SecurityExchange}`;
+// so every key here is the pair, not the bare id. Uses the STRING exchange
+// name (via exchangeName below), not the raw numeric code — the live LTP
+// socket tick identifies securities by string exchange name (e.g. "NSEFO"),
+// so this has to match that format or header-ticker subscriptions can never
+// match themselves to a live tick.
+const rowKey = (item) => `${item.SecurityId}_${exchangeName(item.SecurityExchange)}`;
 
 // ── Hand-rolled virtualization — fixed row height, windowed render ─────────
-const MAX_SUBSCRIPTIONS = 10;
+const MAX_SUBSCRIPTIONS = 5;
 const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 34;
 const OVERSCAN = 10;
@@ -110,17 +114,36 @@ export default function SubscriptionsModal({ onClose }) {
     if (containerRef.current) setViewportHeight(containerRef.current.clientHeight);
   }, []);
 
+  const allItems = useMemo(() => (
+    Array.isArray(subscriptions) ? subscriptions : (subscriptions?.getAllSubscriptionsResult || [])
+  ), [subscriptions]);
+
+  // Keyed lookup so selected chips can resolve a symbol regardless of what
+  // the current search filter happens to show.
+  const byKey = useMemo(() => {
+    const map = {};
+    allItems.forEach((item) => { map[rowKey(item)] = item; });
+    return map;
+  }, [allItems]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = Array.isArray(subscriptions)
-      ? subscriptions
-      : (subscriptions?.getAllSubscriptionsResult || []);
-    if (!q) return list;
-    return list.filter((item) => {
-      const display = (item.Symbol_DisplayName || item.Symbol || '').toLowerCase();
-      return display.includes(q);
+    if (!q) return allItems;
+    // Multi-token, order-independent match — every space-separated word in
+    // the query must appear SOMEWHERE in the combined searchable text, not
+    // as one single literal substring. Searches Symbol_DisplayName AND the
+    // full Symbol (strike/type/expiry live there, not in the display name),
+    // plus the exchange name — none of these three were searched before.
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return allItems.filter((item) => {
+      const searchable = [
+        item.Symbol_DisplayName,
+        item.Symbol,
+        exchangeName(item.SecurityExchange),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return tokens.every((t) => searchable.includes(t));
     });
-  }, [subscriptions, query]);
+  }, [allItems, query]);
 
   const toggleRow = (key) => {
     setSelected((prev) => {
@@ -154,10 +177,18 @@ export default function SubscriptionsModal({ onClose }) {
     });
   };
 
+  const removeSelected = (key) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
   const handleSubscribe = () => {
     const ids = [...selected];
-    saveSelectedSubscriptions(ids, port);
-    subscribeSecurities(ids);
+    saveSelectedSubscriptions(ids, port); // profile storage stays string keys — unaffected by this fix
+    subscribeSecurities(ids.map((key) => byKey[key]).filter(Boolean));
     onClose();
   };
 
@@ -215,6 +246,38 @@ export default function SubscriptionsModal({ onClose }) {
             Clear {query.trim() ? 'filtered' : 'all'}
           </button>
         </div>
+
+        {/* Selected chips — a collective view of everything currently
+            chosen, independent of search/scroll position in the list
+            below. */}
+        {selected.size > 0 && (
+          <div style={{
+            padding: '10px 20px', borderBottom: `1px solid ${C.border}`,
+            display: 'flex', flexWrap: 'wrap', gap: '6px', background: C.surface,
+          }}>
+            {[...selected].map((key) => {
+              const item = byKey[key];
+              const label = item ? (item.Symbol_DisplayName || item.Symbol) : key;
+              return (
+                <span
+                  key={key}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    padding: '3px 8px 3px 10px', borderRadius: '4px', fontSize: '12px',
+                    fontWeight: 600, background: C.navy, color: '#fff',
+                  }}
+                >
+                  {label}
+                  <span
+                    onClick={() => removeSelected(key)}
+                    style={{ cursor: 'pointer', opacity: 0.7, fontSize: '13px', lineHeight: 1 }}
+                    title="Remove"
+                  >×</span>
+                </span>
+              );
+            })}
+          </div>
+        )}
 
         {/* Header + rows share ONE scroll container, so there's only ever
             one scrollbar affecting both — alignment is guaranteed by

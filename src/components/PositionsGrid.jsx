@@ -171,26 +171,11 @@ const getTradeBucketKey = (trade) => {
     if (Symbol === 'BANKNIFTY') return 'bnfFut';
     return 'stocks';
   }
-
-  // Mirrors the same fallback in dataStore.js's getBucketKey — some trades
-  // arrive with SecurityType/Optiontype both null despite being genuine
-  // options, so fall back to reading the C/P indicator out of Symbol. This
-  // MUST stay identical to the dataStore.js version, or bucket totals and
-  // this breakdown panel's filtering will disagree with each other again.
-  let optiontype = Optiontype;
-  if (!optiontype && Symbol) {
-    const tokens = Symbol.trim().split(/\s+/);
-    const cpToken = tokens.find(t => t === 'C' || t === 'P');
-    if (cpToken === 'C') optiontype = 'CE';
-    else if (cpToken === 'P') optiontype = 'PE';
-  }
-
-  if (SecurityType === 'OPT' || optiontype) {
+  if (SecurityType === 'OPT') {
     const week = getWeekKey(Symbol);
-    if (optiontype === 'CE') return `c${week}`;
-    if (optiontype === 'PE') return `p${week}`;
+    if (Optiontype === 'CE') return `c${week}`;
+    if (Optiontype === 'PE') return `p${week}`;
   }
-
   return 'stocks';
 };
 
@@ -913,7 +898,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       if (prev && prev.colId === colId && prev.userKey === userKey) return null;
       const trades = Object.values(pos.tradesMap).filter(t =>
         bucketKeys.includes(getTradeBucketKey(t)) &&
-        (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+        (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0 || t.Pnl !== 0 || t.MTM !== 0)
       );
       trades.sort((a,b) => {
         const ac = a.Optiontype==='CE'?0:1, bc = b.Optiontype==='CE'?0:1;
@@ -947,7 +932,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         const bucketKeys = BUCKET_KEYS[prev.colId] || [];
         const trades = Object.values(mergedTradesMap).filter(t =>
           bucketKeys.includes(getTradeBucketKey(t)) &&
-          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0 || t.Pnl !== 0 || t.MTM !== 0)
         ).sort((a, b) => {
           const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
           if (ac !== bc) return ac - bc;
@@ -963,7 +948,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         const bucketKeys = BUCKET_KEYS[prev.colId] || [];
         const trades = Object.values(pos.tradesMap).filter(t =>
           bucketKeys.includes(getTradeBucketKey(t)) &&
-          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0 || t.Pnl !== 0 || t.MTM !== 0)
         ).sort((a, b) => {
           const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
           if (ac !== bc) return ac - bc;
@@ -988,7 +973,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         const bucketKeys = BUCKET_KEYS[prev.colId] || [];
         const trades = Object.values(mergedTradesMap).filter(t =>
           bucketKeys.includes(getTradeBucketKey(t)) &&
-          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+          (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0 || t.Pnl !== 0 || t.MTM !== 0)
         ).sort((a, b) => {
           const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
           if (ac !== bc) return ac - bc;
@@ -1005,7 +990,7 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
       const bucketKeys = BUCKET_KEYS[prev.colId] || [];
       const trades = Object.values(pos.tradesMap).filter(t =>
         bucketKeys.includes(getTradeBucketKey(t)) &&
-        (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0)
+        (t.NetPos !== 0 || t.SOD_Qty !== 0 || t.IntraQty !== 0 || t.Pnl !== 0 || t.MTM !== 0)
       ).sort((a, b) => {
         const ac = a.Optiontype === 'CE' ? 0 : 1, bc = b.Optiontype === 'CE' ? 0 : 1;
         if (ac !== bc) return ac - bc;
@@ -1205,7 +1190,13 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).accounts.push(pos);
       });
 
-      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.accounts.length > 0);
+      let allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.accounts.length > 0);
+      allBuckets = allBuckets.map(b => {
+        const qtUsersInBucket = new Set();
+        b.accounts.forEach(pos => (pos.qtUsers || []).forEach(u => qtUsersInBucket.add(u)));
+        return { ...b, qtUsers: qtUsersInBucket };
+      });
+      allBuckets = sortGroupEntries(allBuckets);
 
       return allBuckets.map((b) => {
         const qtUserBuckets = buildQtUserBucketsFrom(b.accounts);
@@ -1240,7 +1231,9 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).qtUsers.push(u);
       });
 
-      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.qtUsers.length > 0);
+      let allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.qtUsers.length > 0);
+      allBuckets = allBuckets.map(b => ({ ...b, accounts: b.qtUsers.flatMap(u => userGroups[u] || []) }));
+      allBuckets = sortGroupEntries(allBuckets);
 
       return allBuckets.map((b) => {
         const qtUserKeys = [...b.qtUsers].sort();
@@ -1275,7 +1268,14 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
         (gKey && bucketByKey[gKey] ? bucketByKey[gKey] : ungrouped).ctcls.push(c);
       });
 
-      const allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.ctcls.length > 0);
+      let allBuckets = [...customGroupsList.map(g => bucketByKey[String(g.id)]), ungrouped].filter(b => b.ctcls.length > 0);
+      allBuckets = allBuckets.map(b => {
+        const accts = b.ctcls.flatMap(c => ctclMap[c] || []);
+        const qtUsersInBucket = new Set();
+        accts.forEach(pos => (pos.qtUsers || []).forEach(u => qtUsersInBucket.add(u)));
+        return { ...b, accounts: accts, qtUsers: qtUsersInBucket };
+      });
+      allBuckets = sortGroupEntries(allBuckets);
 
       return allBuckets.map((b) => {
         const ctclKeys = [...b.ctcls].sort();
@@ -1475,6 +1475,40 @@ const PositionsGrid = forwardRef(function PositionsGrid({ positions }, ref) {
     });
   };
 
+  // Sorts the always-visible "group" rows (default view's qtUser rows, or
+  // the top-level custom-group rows in the 3 grouping modes) by the same
+  // sort column/direction as account rows.
+  // PNL/MTM/cumPnl are computed from each entry's raw trades (aggregate).
+  // Margin is NOT summed from account fields (those are always 0 — margin
+  // never lives on account objects, only in userMarginSummary keyed by qt
+  // user) — it's summed from userMarginSummary using each entry's distinct
+  // qtUsers list instead, which is the only place real margin values exist.
+  const sortGroupEntries = (entries) => {
+    if (!sortState.colId || !sortState.dir) return entries;
+    const { colId, dir } = sortState;
+    const mult = dir === 'asc' ? 1 : -1;
+
+    const valueFor = (e) => {
+      if (colId === 'account') return e.label || '';
+      if (colId === 'nseMargin' || colId === 'totalMargin' || colId === 'nseMaxMargin') {
+        const field = colId === 'nseMargin' ? 'nseMarginAbs' : colId === 'totalMargin' ? 'totalMargin' : 'nseMarginMax';
+        return [...(e.qtUsers || [])].reduce((s, u) => s + (userMarginSummary[u]?.[field] || 0), 0);
+      }
+      const trades = e.accounts.flatMap(pos => Object.values(pos.tradesMap || {}));
+      switch (colId) {
+        case 'pnl':    return trades.reduce((s,t)=>s+(t.Pnl||0),0);
+        case 'cumPnl': return trades.reduce((s,t)=>s+(t.cumPnl||0),0);
+        case 'mtm':    return trades.reduce((s,t)=>s+(t.MTM||0),0);
+        default: return 0;
+      }
+    };
+
+    return [...entries].sort((a, b) => {
+      if (colId === 'account') return mult * String(valueFor(a)).localeCompare(String(valueFor(b)));
+      return mult * (valueFor(a) - valueFor(b));
+    });
+  };
+
 return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
       {/* ── Toolbar ── */}
@@ -1573,8 +1607,10 @@ return (
         {/* ── Body ── */}
         <tbody>
           {!groupingConfig.mode ? (
-            Object.keys(userGroups).sort().every(
-              (u) => filterPositions(userGroups[u], u).length === 0
+            sortGroupEntries(
+              Object.keys(userGroups).sort().map(u => ({ key: u, label: u, accounts: userGroups[u], qtUsers: [u] }))
+            ).every(
+              (e) => filterPositions(e.accounts, e.label).length === 0
             ) ? (
               <tr>
                 <td colSpan={totalCols} style={{
@@ -1586,7 +1622,10 @@ return (
                 </td>
               </tr>
             ) :
-            Object.keys(userGroups).sort().map((qtUser) => {
+            sortGroupEntries(
+              Object.keys(userGroups).sort().map(u => ({ key: u, label: u, accounts: userGroups[u], qtUsers: [u] }))
+            ).map((entry) => {
+              const qtUser = entry.label;
               const filteredAccounts = sortPositions(filterPositions(userGroups[qtUser], qtUser));
               if (filteredAccounts.length === 0) return null;
 

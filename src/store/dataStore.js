@@ -43,18 +43,33 @@ const calculatePnl = (trade, ltp, todayNum) => {
 };
 
 // ── Pure MTM calculation — outside the store ──────────────────────────────────
-const calculateMtm = (trade, ltp) => {
+const calculateMtm = (trade, ltp, openPrices) => {
   const {
     SOD_BuyQty, SOD_SellQty,
     BuyQty, SellQty, BuyPrice, SellPrice,
-    Open_price, SecurityExchange, Lot_size,
+    SecurityExchange, Lot_size, SecurityId, Symbol, Expiry,
   } = trade;
 
   const lotSize = Lot_size || 1;
-  // Match Angular: NSEFO uses 0 if no open price, others fall back to ltp
-  const openPrice = Open_price
-    ? Open_price
-    : SecurityExchange === 'NSEFO' ? 0 : ltp;
+
+  // Mirrors Angular's calculateMtm exactly: look up the real open price from
+  // the OpenPrices reference list — NSEFO matches by SecurityId + expiry
+  // month, everything else matches by Symbol + expiry month — falling back
+  // to a default ONLY when no match is found (0 for NSEFO, live ltp for
+  // everything else, same as Angular's un-set default / explicit fallback).
+  // SecurityId comparison uses loose equality (==), not Angular's strict
+  // ===, matching how this same OpenPrices array is already compared
+  // elsewhere in this file (getOpenPrices' Nifty/BankNifty lookups) — safer
+  // given we've already hit real string/number type mismatches on this
+  // exact field elsewhere in this codebase.
+  let openPrice = SecurityExchange === 'NSEFO' ? 0 : ltp;
+  if (Array.isArray(openPrices) && Expiry) {
+    const expiryMonth = String(Expiry).substring(0, 6);
+    const match = SecurityExchange === 'NSEFO'
+      ? openPrices.find(o => o.SecurityId == SecurityId && String(o.Expiry).substring(0, 6) === expiryMonth)
+      : openPrices.find(o => o.Symbol === Symbol && String(o.Expiry).substring(0, 6) === expiryMonth);
+    if (match) openPrice = match.OpenPrice;
+  }
 
   const totalPos = SOD_BuyQty + SOD_SellQty + BuyQty + SellQty;
 
@@ -131,6 +146,8 @@ export const useDataStore = create(devtools((set, get) => ({
       console.error('Cannot connect socket — missing user');
       return;
     }
+    const port = window.location.port || '80';
+    const token = sessionStorage.getItem('x-auth-token');
 
     const socket = io(environment.NodeServiceUrl, {
       transports: ['websocket', 'polling'],
@@ -145,7 +162,7 @@ export const useDataStore = create(devtools((set, get) => ({
     socket.on('connect', () => {
       console.log('Socket connected:', socket.id);
       set({ isSocketConnected: true });
-      socket.emit('Authenticate', { user });
+      socket.emit('Authenticate', { token, user, port });
 
       if (disconnectRefreshTimer) {
         clearTimeout(disconnectRefreshTimer);
@@ -181,6 +198,12 @@ export const useDataStore = create(devtools((set, get) => ({
 
           const [securityId, exchange, ltp, bid, ask, ...rest] = parts;
           const ltpTime = rest.join(','); // timestamp may contain commas
+
+          // TEMP DIAGNOSTIC — accumulates every unique live-tick key seen,
+          // so you can inspect it anytime without racing the 300ms flush.
+          // Remove once done.
+          window.__LTP_KEY_SAMPLES__ = window.__LTP_KEY_SAMPLES__ || new Set();
+          window.__LTP_KEY_SAMPLES__.add(`${securityId}_${exchange}`);
 
           const ltpUpdateMap = {
             [`${securityId}_${exchange}`]: {
@@ -230,7 +253,22 @@ export const useDataStore = create(devtools((set, get) => ({
     set({ socket, isSocketConnected: false, hasConnectedOnce: false });
   },
 
+  // Discards any queued-but-not-yet-flushed trade/LTP batches. Must be
+  // called before any full rebuild of `positions` (refreshTrades,
+  // disconnectSocket→loadAll) — otherwise a stale batch queued from before
+  // the rebuild can fire on its own timer afterward and silently roll a
+  // security's cumulative qty back to an older value, since TotalQtyBuy/
+  // TotalQtySell are cumulative-so-far, not deltas.
+  _clearPendingBatches: () => {
+    const s = get();
+    if (s._tradeTimer) { clearTimeout(s._tradeTimer); s._tradeTimer = null; }
+    s._pendingTrades = [];
+    if (s._ltpTimer) { clearTimeout(s._ltpTimer); s._ltpTimer = null; }
+    s._pendingLtpMap = {};
+  },
+
   disconnectSocket: () => {
+    get()._clearPendingBatches();
     const { socket } = get();
     if (socket) {
       socket.disconnect();
@@ -240,6 +278,7 @@ export const useDataStore = create(devtools((set, get) => ({
 
   // ── Trades-only refresh — used by socket gap recovery + visibility change ──
   refreshTrades: async () => {
+    get()._clearPendingBatches();
     try {
       await get().getLTP();
       await get().getMarginRisk();
@@ -323,18 +362,18 @@ export const useDataStore = create(devtools((set, get) => ({
   // when the user actually hits Subscribe — the backend remembers across
   // sessions, so there's no need to re-issue this on every login/reload.
   // Uses allSettled so one failing security doesn't block the rest.
-  subscribeSecurities: async (keys) => {
+  // Takes the actual security objects (SecurityId + SecurityExchange as
+  // real fields), not composite-key strings — several exchange names
+  // contain underscores themselves (TT_INE, SGX_DC, CME_Q, etc.), so
+  // reverse-parsing "SecurityId_Exchange" back apart was never reliably
+  // possible and would silently send the wrong value for any of those.
+  subscribeSecurities: async (securities) => {
     const results = await Promise.allSettled(
-      (keys || []).map((key) => {
-        const idx = key.lastIndexOf('_');
-        const securityId = key.slice(0, idx);
-        const exch = key.slice(idx + 1);
-        return subscribeForLTP(securityId, exch);
-      })
+      (securities || []).map((sec) => subscribeForLTP(sec.SecurityId, sec.SecurityExchange))
     );
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`Failed to subscribe for LTP (${keys[i]}):`, r.reason);
+        console.error(`Failed to subscribe for LTP (${securities[i]?.SecurityId}):`, r.reason);
       }
     });
   },
@@ -497,6 +536,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
     } catch (err) {
       set({ error: err.message });
+      throw err;
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
     }
@@ -527,6 +567,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
     } catch (err) {
       set({ error: err.message });
+      throw err;
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
     }
@@ -561,6 +602,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
     } catch (err) {
       set({ error: err.message });
+      throw err;
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
     }
@@ -621,6 +663,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
     } catch (err) {
       set({ error: err.message });
+      throw err;
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
     }
@@ -640,6 +683,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
     } catch (err) {
       set({ error: err.message });
+      throw err;
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
     }
@@ -890,7 +934,30 @@ export const useDataStore = create(devtools((set, get) => ({
       s2._pendingLtpMap = {};
       s2._ltpTimer = null;
       get()._applyLtpBatch(batch);
+      get()._applyHeaderLtpBatch(batch);
     }, 300);
+  },
+
+  // Header ticker subscriptions are watched independently of whether they
+  // have any open position — _applyLtpBatch below filters ticks down to
+  // only position-relevant securities, so a pure "watch this price" security
+  // would otherwise be silently dropped before ever reaching headerLtps.
+  _applyHeaderLtpBatch: (ltpUpdateMap) => {
+    const { selectedSubscriptions, headerLtps } = get();
+    if (!selectedSubscriptions || selectedSubscriptions.length === 0) return;
+
+    const subscribedSet = new Set(selectedSubscriptions);
+    let changed = false;
+    const updated = { ...headerLtps };
+
+    Object.entries(ltpUpdateMap).forEach(([secKey, tick]) => {
+      if (!subscribedSet.has(secKey)) return;
+      const newLtp = tick.ltp ?? tick.LTP ?? 0;
+      updated[secKey] = { ltp: newLtp };
+      changed = true;
+    });
+
+    if (changed) set({ headerLtps: updated });
   },
 
   _applyLtpBatch: (ltpUpdateMap) => {
@@ -933,7 +1000,7 @@ export const useDataStore = create(devtools((set, get) => ({
 
         const refreshed = { ...trade, Ltp: newLtp };
         const { pnl, cumPnl } = calculatePnl(refreshed, newLtp, todayNum);
-        const mtm = calculateMtm(refreshed, newLtp);
+        const mtm = calculateMtm(refreshed, newLtp, get().OpenPrices);
 
         newTradesMap[tradeKey] = { ...refreshed, Pnl: pnl, cumPnl, MTM: mtm };
         acctChanged = true;
@@ -1222,7 +1289,7 @@ export const useDataStore = create(devtools((set, get) => ({
       }
 
       const { pnl, cumPnl } = calculatePnl(finalTrade, ltp, todayNum);
-      const mtm = calculateMtm(finalTrade, ltp);
+      const mtm = calculateMtm(finalTrade, ltp, get().OpenPrices);
       finalTrade = { ...finalTrade, Pnl: pnl, cumPnl, MTM: mtm };
 
       // Computed from finalTrade, not the raw incoming message — finalTrade

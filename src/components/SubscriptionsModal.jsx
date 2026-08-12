@@ -102,10 +102,15 @@ export default function SubscriptionsModal({ onClose }) {
   const selectedSubscriptions = useDataStore(s => s.selectedSubscriptions);
   const saveSelectedSubscriptions = useDataStore(s => s.saveSelectedSubscriptions);
   const subscribeSecurities = useDataStore(s => s.subscribeSecurities);
+  const customCalcConfig = useDataStore(s => s.customCalcConfig);
   const port = window.location.port || '80';
 
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(() => new Set(selectedSubscriptions || []));
+  // conflicts = { ids, affected } while a save is paused waiting for the
+  // user to resolve custom-calc variables that pointed at a subscription
+  // that's about to be removed. null = no conflict screen active.
+  const [blocked, setBlocked] = useState(null); // { affected } while save is blocked by custom-calc usage
   const [scrollTop, setScrollTop] = useState(0);
   const containerRef = useRef(null);
   const [viewportHeight, setViewportHeight] = useState(420);
@@ -187,7 +192,15 @@ export default function SubscriptionsModal({ onClose }) {
 
   const handleSubscribe = () => {
     const ids = [...selected];
-    saveSelectedSubscriptions(ids, port); // profile storage stays string keys — unaffected by this fix
+    const slots = customCalcConfig?.slots || [];
+    const affected = slots.filter((s) => s.subscriptionKey && !ids.includes(s.subscriptionKey));
+
+    if (affected.length > 0) {
+      setBlocked({ affected });
+      return; // blocked entirely — nothing saves until Custom Live Calculations is cleared
+    }
+
+    saveSelectedSubscriptions(ids, port);
     subscribeSecurities(ids.map((key) => byKey[key]).filter(Boolean));
     onClose();
   };
@@ -200,6 +213,40 @@ export default function SubscriptionsModal({ onClose }) {
   const startIndex = Math.max(0, Math.floor(rowsScrollTop / ROW_HEIGHT) - OVERSCAN);
   const endIndex = Math.min(itemCount, Math.ceil((rowsScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
   const visibleItems = filtered.slice(startIndex, endIndex);
+
+  if (blocked) {
+    return (
+      <div style={overlay}>
+        <div style={{ ...modal, width: '480px' }}>
+          <div style={header}>
+            <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff', letterSpacing: '0.2px' }}>
+              Can't Remove — In Use
+            </span>
+          </div>
+          <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontSize: '13px', color: C.text }}>
+              The following Custom Live Calculations variables are using a subscription you're trying to remove:
+            </div>
+            <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: C.text, lineHeight: 1.8 }}>
+              {blocked.affected.map((slot) => (
+                <li key={slot.id}><strong>{slot.name}</strong></li>
+              ))}
+            </ul>
+            <div style={{ fontSize: '13px', color: C.muted }}>
+              Open <strong>Custom Live Calculations</strong> and clear this data (there's a "Remove All" button there) before removing this subscription.
+            </div>
+          </div>
+          <div style={footer}>
+            <button onClick={() => setBlocked(null)} style={{
+              fontSize: '13px', fontWeight: 700, color: '#fff',
+              background: C.navy, border: 'none',
+              borderRadius: '6px', padding: '8px 22px', cursor: 'pointer',
+            }}>Got it</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>

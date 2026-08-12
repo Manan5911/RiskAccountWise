@@ -7,7 +7,9 @@ import { useNavigate } from 'react-router-dom';
 import { Typography, Box, Button, Skeleton } from '@mui/material';
 import PositionsGrid from '../components/PositionsGrid';
 import SubscriptionsModal from '../components/SubscriptionsModal';
+import CustomCalcModal from '../components/CustomCalcModal';
 import LtpTicker from '../components/LtpTicker';
+import CustomCalcTicker from '../components/CustomCalcTicker';
 
 const REFRESH_TRADES_AFTER_MS = 30  * 1000;
 const REFRESH_FULL_AFTER_MS   = 5   * 60 * 1000;
@@ -57,7 +59,7 @@ const SocketStatus = ({ isConnected }) => (
 );
 
 // ─── User menu dropdown ───────────────────────────────────────────────────────
-const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions }) => {
+const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions, onOpenCustomCalc }) => {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef(null);
 
@@ -72,6 +74,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
     { icon: '⊜', label: 'Grouping', action: () => { onOpenGrouping(); setOpen(false); } },
     { icon: showAccountRows ? '☑' : '☐', label: 'Show account rows', action: () => { onToggleAccountRows(); setOpen(false); } },
     { icon: '◉', label: 'Live Subscriptions', action: () => { onOpenSubscriptions(); setOpen(false); } },
+    { icon: 'ƒ', label: 'Custom Live Calcs', action: () => { onOpenCustomCalc(); setOpen(false); } },
     { divider: true },
     { icon: '⎋', label: 'Logout',   action: () => { onLogout();       setOpen(false); }, danger: true },
 ];  
@@ -137,7 +140,7 @@ const UserMenu = ({ user, onLogout, onOpenColumns, onOpenGrouping, showAccountRo
 };
 
 // ─── Header bar ───────────────────────────────────────────────────────────────
-const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions }) => (
+const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGrouping, showAccountRows, onToggleAccountRows, onOpenSubscriptions, onOpenCustomCalc }) => (
   <Box sx={{
     px: 2, py: 1,
     display: 'flex', alignItems: 'center',
@@ -149,7 +152,17 @@ const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGro
       </Typography>
       <SocketStatus isConnected={isSocketConnected} />
     </Box>
-    <LtpTicker />
+    {/* 50/50 split — subscriptions on the left, custom calc results on the
+        right. Each ticker fills its own half and scrolls horizontally on
+        its own if its content overflows that half. */}
+    <Box sx={{ display: 'flex', flex: 1, minWidth: 0 }}>
+      <Box sx={{ width: '50%', minWidth: 0 }}>
+        <LtpTicker />
+      </Box>
+      <Box sx={{ width: '50%', minWidth: 0, borderLeft: '1px solid #dde2ec' }}>
+        <CustomCalcTicker />
+      </Box>
+    </Box>
     <UserMenu
       user={user}
       onLogout={onLogout}
@@ -158,6 +171,7 @@ const HeaderBar = ({ user, onLogout, isSocketConnected, onOpenColumns, onOpenGro
       showAccountRows={showAccountRows}
       onToggleAccountRows={onToggleAccountRows}
       onOpenSubscriptions={onOpenSubscriptions}
+      onOpenCustomCalc={onOpenCustomCalc}
     />
   </Box>
 );
@@ -212,6 +226,7 @@ export default function Dashboard() {
     fetchShowAccountRows,
     setShowAccountRows,
     fetchSelectedSubscriptions,
+    fetchCustomCalcConfig,
   } = useDataStore();
 
   const pendingRequests    = useDataStore((state) => state.pendingRequests);
@@ -245,6 +260,7 @@ export default function Dashboard() {
       await fetchCustomColumns(port);
       await fetchShowAccountRows(port);
       await fetchSelectedSubscriptions(port);
+      await fetchCustomCalcConfig(port);
       await fetchCommonSubscription();
 
       await Promise.all([
@@ -337,6 +353,7 @@ export default function Dashboard() {
 
   const posGridRef = React.useRef(null);
   const [subscriptionsOpen, setSubscriptionsOpen] = React.useState(false);
+  const [customCalcOpen, setCustomCalcOpen] = React.useState(false);
 
   const handleLogout = () => {
     disconnectSocket();
@@ -362,9 +379,13 @@ export default function Dashboard() {
         showAccountRows={showAccountRows}
         onToggleAccountRows={() => setShowAccountRows(!showAccountRows, port)}
         onOpenSubscriptions={() => setSubscriptionsOpen(true)}
+        onOpenCustomCalc={() => setCustomCalcOpen(true)}
       />
       {subscriptionsOpen && (
         <SubscriptionsModal onClose={() => setSubscriptionsOpen(false)} />
+      )}
+      {customCalcOpen && (
+        <CustomCalcModal onClose={() => setCustomCalcOpen(false)} />
       )}
       <Box sx={{ flex: 1, overflow: 'hidden', px: 2, pb: 2 }}>
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>

@@ -81,14 +81,14 @@ export default function LtpTicker() {
     saveSelectedSubscriptions(order, port);
   };
 
-  // Always occupy the middle space (even when empty) so the header layout
-  // doesn't shift depending on whether anything is subscribed.
-  if (items.length === 0) return <div style={{ flex: 1, minWidth: 0 }} />;
+  // Always occupy its half of the header (even when empty) so the 50/50
+  // split with CustomCalcTicker stays stable regardless of content.
+  if (items.length === 0) return <div style={{ width: '100%', minWidth: 0 }} />;
 
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: '6px',
-      overflowX: 'auto', flex: 1, minWidth: 0, padding: '0 14px',
+      overflowX: 'auto', width: '100%', minWidth: 0, padding: '0 14px',
     }}>
       {items.map(({ key, symbol, openPrice, initialLtp }) => {
         const tick = headerLtps?.[key];

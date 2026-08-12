@@ -135,6 +135,7 @@ export const useDataStore = create(devtools((set, get) => ({
   customColumns: null,
   subscriptions: [],
   selectedSubscriptions: [], // "SecurityId_SecurityExchange" composite keys
+  customCalcConfig: { slots: [], formulas: [] },
   headerLtps: {}, // { [key]: { ltp, dir } } — populated by live socket wiring in a later step
 
   connectSocket: () => {
@@ -332,6 +333,31 @@ export const useDataStore = create(devtools((set, get) => ({
       set({ error: err.message });
     } finally {
       set((state) => ({ pendingRequests: Math.max(0, state.pendingRequests - 1) }));
+    }
+  },
+
+  fetchCustomCalcConfig: async (port) => {
+    try {
+      const loginUser = sessionStorage.getItem('UserName');
+      const data = await getUserProfile(loginUser, port);
+      const entry = data?.find(v => v.ProfileName === 'CustomCalcConfig');
+      if (entry) {
+        const parsed = JSON.parse(entry.ProfileValue || 'null');
+        if (parsed && Array.isArray(parsed.slots) && Array.isArray(parsed.formulas)) {
+          set({ customCalcConfig: parsed });
+        }
+      } // else keep the default ({ slots: [], formulas: [] })
+    } catch (err) {
+      console.error('Failed to fetch custom calc config:', err);
+    }
+  },
+
+  saveCustomCalcConfig: async (config, port) => {
+    try {
+      await editUserProfile(port, 'CustomCalcConfig', JSON.stringify(config));
+      set({ customCalcConfig: config });
+    } catch (err) {
+      console.error('Failed to save custom calc config:', err);
     }
   },
 
@@ -1368,6 +1394,7 @@ export const useDataStore = create(devtools((set, get) => ({
       groupingConfig: { mode: null, groups: [] },
       showAccountRows: true,
       selectedSubscriptions: [],
+      customCalcConfig: { slots: [], formulas: [] },
       headerLtps: {},
       customColumns: null,
     });
